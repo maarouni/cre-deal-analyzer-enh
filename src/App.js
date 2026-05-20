@@ -156,31 +156,40 @@ function GateScreen({ onAuth }) {
           </div>
         </div>
 
-        {step === "password" && <>
-          <input type="password" placeholder="Access password"
-            value={pwd} onChange={e => setPwd(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && submitPassword()}
-            style={inputStyle} />
-          {pwdErr && <div style={{ color: C.red, fontSize: 12, marginBottom: 8 }}>{pwdErr}</div>}
-          <button onClick={submitPassword} style={btnStyle}>Continue →</button>
-        </>}
+        {step === "password" && (
+          <form onSubmit={e => { e.preventDefault(); submitPassword(); }}
+            autoComplete="on">
+            <input type="text" name="username" autoComplete="username"
+              style={{ display: "none" }} readOnly value="cre-analyzer" />
+            <input type="password" name="password" placeholder="Access password"
+              autoComplete="current-password"
+              value={pwd} onChange={e => setPwd(e.target.value)}
+              style={inputStyle} />
+            {pwdErr && <div style={{ color: C.red, fontSize: 12, marginBottom: 8 }}>{pwdErr}</div>}
+            <button type="submit" style={btnStyle}>Continue →</button>
+          </form>
+        )}
 
-        {step === "pin" && <>
-          <input type="text" placeholder="Your username (e.g. andy)"
-            value={user} onChange={e => setUser(e.target.value)}
-            style={inputStyle} />
-          <input type="password" placeholder="Your PIN"
-            value={pin} onChange={e => setPin(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && submitPin()}
-            style={inputStyle} />
-          {pinErr && <div style={{ color: C.red, fontSize: 12, marginBottom: 8 }}>{pinErr}</div>}
-          <button onClick={submitPin} style={btnStyle}>Access Analyzer →</button>
-          <button onClick={() => { setStep("password"); setPwd(""); setPinErr(""); }}
-            style={{ ...btnStyle, background: "transparent", color: C.muted,
-              border: `1px solid ${C.border}`, marginTop: 8 }}>
-            ← Back
-          </button>
-        </>}
+        {step === "pin" && (
+          <form onSubmit={e => { e.preventDefault(); submitPin(); }}
+            autoComplete="on">
+            <input type="text" name="username" placeholder="Your username (e.g. andy)"
+              autoComplete="username"
+              value={user} onChange={e => setUser(e.target.value)}
+              style={inputStyle} />
+            <input type="password" name="pin" placeholder="Your PIN"
+              autoComplete="current-password"
+              value={pin} onChange={e => setPin(e.target.value)}
+              style={inputStyle} />
+            {pinErr && <div style={{ color: C.red, fontSize: 12, marginBottom: 8 }}>{pinErr}</div>}
+            <button type="submit" style={btnStyle}>Access Analyzer →</button>
+            <button type="button" onClick={() => { setStep("password"); setPwd(""); setPinErr(""); }}
+              style={{ ...btnStyle, background: "transparent", color: C.muted,
+                border: `1px solid ${C.border}`, marginTop: 8 }}>
+              ← Back
+            </button>
+          </form>
+        )}
 
         <div style={{ textAlign: "center", marginTop: 20, fontSize: 10, color: C.muted }}>
           Protected access — RealEstate-Analytics.ai
