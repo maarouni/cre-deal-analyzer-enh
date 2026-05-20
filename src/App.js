@@ -614,18 +614,68 @@ function Widget({ userName }) {
                 <div style={{ fontSize: 13, color: C.gold, fontWeight: 700, marginBottom: 12 }}>
                   📄 Reports & Export
                 </div>
-                <a href="https://cre-agent-investor-lender-dcyykon5p5qs8v3hb8gmsn.streamlit.app/Main_Single_Property"
+
+                {/* User Manual — direct PDF link */}
+                <a href="./Investment_Metrics_User_Guide_v2.pdf"
                   target="_blank" rel="noopener noreferrer"
                   style={{ display: "block", width: "100%", padding: "11px", marginBottom: 10,
                     background: "transparent", border: `1px solid ${C.gold}`,
                     color: C.gold, borderRadius: 8, cursor: "pointer", fontSize: 13,
-                    fontWeight: 600, textAlign: "center", textDecoration: "none" }}>
+                    fontWeight: 600, textAlign: "center", textDecoration: "none",
+                    boxSizing: "border-box" }}>
                   📘 Download User Manual (PDF)
                 </a>
-                <button style={{ width: "100%", padding: "11px", marginBottom: 10,
-                  background: "transparent", border: `1px solid ${C.gold}`,
-                  color: C.gold, borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
-                  📊 Download PDF Report
+
+                {/* PDF Report — generated client-side */}
+                <button onClick={() => {
+                  const lines = [
+                    "CRE Deal Analyzer — RealEstate-Analytics.ai",
+                    "Generated: " + new Date().toLocaleDateString(),
+                    "---",
+                    "PROPERTY INPUTS",
+                    "Acquisition Price: $" + purchasePrice.toLocaleString(),
+                    "In-Place Rent: $" + monthlyRent.toLocaleString() + "/mo",
+                    "Operating Expenses: $" + monthlyExpenses.toLocaleString() + "/mo",
+                    "Lease Type: " + leaseType,
+                    "Tenant Credit: " + tenantCredit,
+                    "Equity Contribution: " + downPct + "%",
+                    "Loan Interest Rate: " + mortgageRate + "%",
+                    "Amortization: " + mortgageTerm + " years",
+                    "Economic Vacancy: " + economicVacancy + "%",
+                    "Annual Appreciation: " + appreciationRate + "%",
+                    "Annual Rent Growth: " + rentGrowthRate + "%",
+                    "Hold Period: " + timeHorizon + " years",
+                    "Broker Fee: " + brokerFeePct + "%",
+                    "---",
+                    "RESULTS",
+                    "Cap Rate: " + m.capRate.toFixed(2) + "%",
+                    "Cash-on-Cash: " + m.coc.toFixed(2) + "%",
+                    "IRR (Operational): " + m.irrOp.toFixed(2) + "%",
+                    "IRR (Total incl. Sale): " + m.irrTotal.toFixed(2) + "%",
+                    "Equity Multiple: " + m.eqMult.toFixed(2) + "x",
+                    "DSCR (Year 1): " + m.dscr.toFixed(2),
+                    "Year 1 Cash Flow: $" + Math.round(m.cf1).toLocaleString(),
+                    "Monthly Mortgage: $" + Math.round(m.mortgage).toLocaleString(),
+                    "---",
+                    "MULTI-YEAR CASH FLOWS",
+                    m.cashFlows.map((v, i) => "Year " + (i+1) + ": $" + v.toLocaleString()).join("\n"),
+                    "---",
+                    "realestate-analytics.ai | 925-353-5263",
+                  ];
+                  const text = lines.join("\n");
+                  const blob = new Blob([text], { type: "text/plain" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = "CRE_Deal_Analysis_" + new Date().toISOString().slice(0,10) + ".txt";
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+                  style={{ width: "100%", padding: "11px", marginBottom: 10,
+                    background: "transparent", border: `1px solid ${C.gold}`,
+                    color: C.gold, borderRadius: 8, cursor: "pointer", fontSize: 13,
+                    fontWeight: 600, boxSizing: "border-box" }}>
+                  📊 Download Deal Report (.txt)
                 </button>
               </div>
 
@@ -640,16 +690,37 @@ function Widget({ userName }) {
                   style={{ width: "100%", boxSizing: "border-box", background: C.navyLt,
                     border: `1px solid ${C.border}`, borderRadius: 6,
                     padding: "8px 10px", color: C.white, fontSize: 13, marginBottom: 10 }} />
-                <button onClick={() => { if (emailAddr) setEmailSent(true); }}
+                <button onClick={() => {
+                  if (!emailAddr) return;
+                  const subject = encodeURIComponent("CRE Deal Analysis — RealEstate-Analytics.ai");
+                  const body = encodeURIComponent(
+                    "CRE Deal Analyzer Report\n\n" +
+                    "Acquisition Price: $" + purchasePrice.toLocaleString() + "\n" +
+                    "In-Place Rent: $" + monthlyRent.toLocaleString() + "/mo\n" +
+                    "Lease Type: " + leaseType + "\n" +
+                    "Tenant Credit: " + tenantCredit + "\n\n" +
+                    "RESULTS\n" +
+                    "Cap Rate: " + m.capRate.toFixed(2) + "%\n" +
+                    "Cash-on-Cash: " + m.coc.toFixed(2) + "%\n" +
+                    "IRR (Total): " + m.irrTotal.toFixed(2) + "%\n" +
+                    "Equity Multiple: " + m.eqMult.toFixed(2) + "x\n" +
+                    "DSCR: " + m.dscr.toFixed(2) + "\n" +
+                    "Year 1 Cash Flow: $" + Math.round(m.cf1).toLocaleString() + "\n\n" +
+                    "Full analysis: https://maarouni.github.io/cre-deal-analyzer-enh/\n" +
+                    "RealEstate-Analytics.ai | 925-353-5263"
+                  );
+                  window.open("mailto:" + emailAddr + "?subject=" + subject + "&body=" + body);
+                  setEmailSent(true);
+                }}
                   style={{ width: "100%", padding: "11px",
                     background: emailSent ? C.green : C.gold, border: "none",
                     color: emailSent ? C.white : C.navy, borderRadius: 8,
                     cursor: "pointer", fontSize: 13, fontWeight: 700 }}>
-                  {emailSent ? "✓ Report Sent!" : "Send Email Report"}
+                  {emailSent ? "✓ Email Draft Opened!" : "Send Email Report"}
                 </button>
                 {emailSent && (
                   <div style={{ fontSize: 11, color: C.green, marginTop: 8, textAlign: "center" }}>
-                    Report sent to {emailAddr}
+                    Your email client opened with the report pre-filled for {emailAddr}
                   </div>
                 )}
               </div>
