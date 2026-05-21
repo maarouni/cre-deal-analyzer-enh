@@ -102,13 +102,17 @@ function calcMetrics({ purchasePrice, monthlyRent, downPct, mortgageRate,
 }
 
 // ─── Gate Screen ──────────────────────────────────────────────────────────────
+// PIN-to-name mapping (PIN is the only thing user types in step 2)
+const PIN_TO_NAME = Object.fromEntries(
+  Object.entries(USER_PINS).map(([name, pin]) => [pin, name])
+);
+
 function GateScreen({ onAuth }) {
-  const [step,    setStep]    = useState("password"); // "password" | "pin"
-  const [pwd,     setPwd]     = useState("");
-  const [user,    setUser]    = useState("");
-  const [pin,     setPin]     = useState("");
-  const [pwdErr,  setPwdErr]  = useState("");
-  const [pinErr,  setPinErr]  = useState("");
+  const [step,   setStep]   = useState("password");
+  const [pwd,    setPwd]    = useState("");
+  const [pin,    setPin]    = useState("");
+  const [pwdErr, setPwdErr] = useState("");
+  const [pinErr, setPinErr] = useState("");
 
   function submitPassword() {
     if (pwd === APP_PASSWORD) { setStep("pin"); setPwdErr(""); }
@@ -116,9 +120,8 @@ function GateScreen({ onAuth }) {
   }
 
   function submitPin() {
-    const name = user.toLowerCase().trim();
-    if (!USER_PINS[name]) { setPinErr("❌ Username not recognised."); return; }
-    if (USER_PINS[name] === pin.trim()) { onAuth(name); }
+    const name = PIN_TO_NAME[pin.trim()];
+    if (name) { onAuth(name); }
     else setPinErr("❌ Incorrect PIN. Please try again.");
   }
 
@@ -131,7 +134,7 @@ function GateScreen({ onAuth }) {
   const btnStyle = {
     width: "100%", padding: "13px", background: C.gold, border: "none",
     color: C.navy, borderRadius: 8, cursor: "pointer",
-    fontSize: 15, fontWeight: 700, marginTop: 4,
+    fontSize: 15, fontWeight: 700, marginTop: 4, boxSizing: "border-box",
   };
 
   return (
@@ -152,35 +155,37 @@ function GateScreen({ onAuth }) {
             🏢 CRE Deal Analyzer
           </div>
           <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
-            {step === "password" ? "🔒 Enter access password" : "🔑 Enter your username & PIN"}
+            {step === "password" ? "🔒 Enter access password" : "🔑 Enter your PIN"}
           </div>
         </div>
 
-        {step === "password" && <>
-          <input type="password" placeholder="Access password"
-            value={pwd} onChange={e => setPwd(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && submitPassword()}
-            style={inputStyle} />
-          {pwdErr && <div style={{ color: C.red, fontSize: 12, marginBottom: 8 }}>{pwdErr}</div>}
-          <button onClick={submitPassword} style={btnStyle}>Continue →</button>
-        </>}
+        {step === "password" && (
+          <form onSubmit={e => { e.preventDefault(); submitPassword(); }}>
+            <input type="password" placeholder="Access password"
+              value={pwd} onChange={e => setPwd(e.target.value)}
+              autoComplete="current-password"
+              style={inputStyle} />
+            {pwdErr && <div style={{ color: C.red, fontSize: 12, marginBottom: 8 }}>{pwdErr}</div>}
+            <button type="submit" style={btnStyle}>Continue →</button>
+          </form>
+        )}
 
-        {step === "pin" && <>
-          <input type="text" placeholder="Your username (e.g. andy)"
-            value={user} onChange={e => setUser(e.target.value)}
-            style={inputStyle} />
-          <input type="password" placeholder="Your PIN"
-            value={pin} onChange={e => setPin(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && submitPin()}
-            style={inputStyle} />
-          {pinErr && <div style={{ color: C.red, fontSize: 12, marginBottom: 8 }}>{pinErr}</div>}
-          <button onClick={submitPin} style={btnStyle}>Access Analyzer →</button>
-          <button onClick={() => { setStep("password"); setPwd(""); setPinErr(""); }}
-            style={{ ...btnStyle, background: "transparent", color: C.muted,
-              border: `1px solid ${C.border}`, marginTop: 8 }}>
-            ← Back
-          </button>
-        </>}
+        {step === "pin" && (
+          <form onSubmit={e => { e.preventDefault(); submitPin(); }}>
+            <input type="password" placeholder="Your 4-digit PIN"
+              value={pin} onChange={e => setPin(e.target.value)}
+              maxLength={4} inputMode="numeric"
+              style={inputStyle} />
+            {pinErr && <div style={{ color: C.red, fontSize: 12, marginBottom: 8 }}>{pinErr}</div>}
+            <button type="submit" style={btnStyle}>Access Analyzer →</button>
+            <button type="button"
+              onClick={() => { setStep("password"); setPwd(""); setPin(""); setPinErr(""); }}
+              style={{ ...btnStyle, background: "transparent", color: C.muted,
+                border: `1px solid ${C.border}`, marginTop: 8 }}>
+              ← Back
+            </button>
+          </form>
+        )}
 
         <div style={{ textAlign: "center", marginTop: 20, fontSize: 10, color: C.muted }}>
           Protected access — RealEstate-Analytics.ai
