@@ -82,15 +82,24 @@ function calcMetrics({ purchasePrice, monthlyRent, downPct, mortgageRate,
   cfTotal[cfTotal.length - 1] += saleVal;
 
   function irrSolve(flows) {
-    let r = 0.1;
-    for (let i = 0; i < 200; i++) {
-      const f  = flows.reduce((a, cf, j) => a + cf / (1 + r) ** (j + 1), -down);
-      const df = flows.reduce((a, cf, j) => a - (j + 1) * cf / (1 + r) ** (j + 2), 0);
-      if (!isFinite(f) || Math.abs(df) < 1e-12) break;
-      r -= f / df;
-      if (r < -0.99) { r = -0.99; break; }
+    if (!down || down <= 0) return null;
+    const npv = (r) => flows.reduce((a, cf, j) => a + cf / (1 + r) ** (j + 1), -down);
+    const dnpv = (r) => flows.reduce((a, cf, j) => a - (j + 1) * cf / (1 + r) ** (j + 2), 0);
+    for (const guess of [0.1, 0.05, 0.15, 0.01, 0.2, -0.05, -0.1, -0.2, -0.3, -0.15, -0.25]) {
+      let r = guess;
+      let converged = false;
+      for (let i = 0; i < 300; i++) {
+        const f = npv(r), df = dnpv(r);
+        if (!isFinite(f) || !isFinite(df) || Math.abs(df) < 1e-14) break;
+        const step = f / df;
+        r -= step;
+        if (r < -0.99) break;
+        if (r > 100) break;
+        if (Math.abs(step) < 1e-10) { converged = true; break; }
+      }
+      if (converged && isFinite(r) && r > -0.99 && r < 100) return r * 100;
     }
-    return r * 100;
+    return null;
   }
 
   const irrOp    = irrSolve(cashFlows);
@@ -215,6 +224,8 @@ function SliderInput({ label, value, min, max, step = 1, display, onChange }) {
 }
 
 function PlusMinusInput({ label, value, min, max, step = 1, display, onChange, note }) {
+  const [editing, setEditing] = useState(false);
+  const [raw, setRaw] = useState("");
   return (
     <div style={{ marginBottom: 13 }}>
       <Label>{label}</Label>
@@ -223,9 +234,34 @@ function PlusMinusInput({ label, value, min, max, step = 1, display, onChange, n
           style={{ width: 28, height: 28, border: `1px solid ${C.border}`,
             background: C.navyLt, color: C.gold, borderRadius: 5,
             cursor: "pointer", fontSize: 16, lineHeight: 1 }}>−</button>
-        <div style={{ flex: 1, background: C.navyLt, border: `1px solid ${C.border}`,
-          borderRadius: 5, padding: "5px 10px", fontSize: 13,
-          color: C.white, textAlign: "center" }}>{display(value)}</div>
+        {editing ? (
+          <input
+            autoFocus
+            type="number"
+            value={raw}
+            onChange={e => setRaw(e.target.value)}
+            onBlur={() => {
+              const parsed = parseFloat(raw);
+              if (!isNaN(parsed) && parsed >= min && parsed <= max) onChange(parsed);
+              setEditing(false);
+              setRaw("");
+            }}
+            onKeyDown={e => {
+              if (e.key === "Enter") e.target.blur();
+              if (e.key === "Escape") { setEditing(false); setRaw(""); }
+            }}
+            style={{ flex: 1, background: C.navyLt, border: `1px solid ${C.gold}`,
+              borderRadius: 5, padding: "5px 10px", fontSize: 13,
+              color: C.white, textAlign: "center" }}
+          />
+        ) : (
+          <div
+            onClick={() => { setRaw(String(value)); setEditing(true); }}
+            title="Click to type a value"
+            style={{ flex: 1, background: C.navyLt, border: `1px solid ${C.border}`,
+              borderRadius: 5, padding: "5px 10px", fontSize: 13,
+              color: C.white, textAlign: "center", cursor: "text" }}>{display(value)}</div>
+        )}
         <button onClick={() => onChange(Math.min(max, value + step))}
           style={{ width: 28, height: 28, border: `1px solid ${C.border}`,
             background: C.navyLt, color: C.gold, borderRadius: 5,
@@ -473,15 +509,15 @@ function Widget({ userName }) {
             padding: "5px 8px", color: C.white, fontSize: 12, marginBottom: 12 }} />
 
           <PlusMinusInput label="Acquisition Price ($)" value={purchasePrice}
-            min={50000} max={5000000} step={10000}
+            min={50000} max={50000000} step={10000}
             display={v => "$" + v.toLocaleString()} onChange={setPurchasePrice} />
 
           <PlusMinusInput label="In-Place Rent ($/mo)" value={monthlyRent}
-            min={200} max={50000} step={100}
+            min={200} max={500000} step={100}
             display={v => "$" + v.toLocaleString()} onChange={setMonthlyRent} />
 
           <PlusMinusInput label="Operating Expenses (OpEx) ($/mo)" value={monthlyExpenses}
-            min={0} max={20000} step={50}
+            min={0} max={200000} step={50}
             display={v => "$" + v.toLocaleString()} onChange={setMonthlyExpenses}
             note="Includes property tax, insurance, and miscellaneous costs" />
 
@@ -542,10 +578,10 @@ function Widget({ userName }) {
               📈 Long-Term Metrics
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-              <Pill label="IRR (Operational) (%)" value={m.irrOp.toFixed(2)}
-                color={m.irrOp >= 0 ? C.white : C.red} />
-              <Pill label="IRR (Total incl. Sale) (%)" value={m.irrTotal.toFixed(2)}
-                color={m.irrTotal >= 8 ? C.green : C.gold} />
+              <Pill label="IRR (Operational) (%)" value={m.irrOp != null ? m.irrOp.toFixed(2) : "N/A"}
+                color={m.irrOp != null && m.irrOp >= 0 ? C.white : C.red} />
+              <Pill label="IRR (Total incl. Sale) (%)" value={m.irrTotal != null ? m.irrTotal.toFixed(2) : "N/A"}
+                color={m.irrTotal != null && m.irrTotal >= 8 ? C.green : C.gold} />
               <Pill label="Equity Multiple" value={m.eqMult.toFixed(2) + "×"} color={C.goldLt} />
               <Pill label="DSCR (Year 1)" value={m.dscr.toFixed(2)}
                 color={m.dscr >= 1.25 ? C.green : m.dscr >= 1 ? C.gold : C.red} />
@@ -655,8 +691,8 @@ function Widget({ userName }) {
                     "RESULTS",
                     "Cap Rate: " + m.capRate.toFixed(2) + "%",
                     "Cash-on-Cash: " + m.coc.toFixed(2) + "%",
-                    "IRR (Operational): " + m.irrOp.toFixed(2) + "%",
-                    "IRR (Total incl. Sale): " + m.irrTotal.toFixed(2) + "%",
+                    "IRR (Operational): " + m.irrOp != null ? m.irrOp.toFixed(2) + "%" : "N/A",
+                    "IRR (Total incl. Sale): " + m.irrTotal != null ? m.irrTotal.toFixed(2) + "%" : "N/A",
                     "Equity Multiple: " + m.eqMult.toFixed(2) + "x",
                     "DSCR (Year 1): " + m.dscr.toFixed(2),
                     "Year 1 Cash Flow: $" + Math.round(m.cf1).toLocaleString(),
