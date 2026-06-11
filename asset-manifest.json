@@ -1,10 +1,10 @@
 {
   "files": {
-    "main.js": "/cre-deal-analyzer-enh/static/js/main.c2dbce54.js",
+    "main.js": "/cre-deal-analyzer-enh/static/js/main.d2b7f72b.js",
     "index.html": "/cre-deal-analyzer-enh/index.html",
-    "main.c2dbce54.js.map": "/cre-deal-analyzer-enh/static/js/main.c2dbce54.js.map"
+    "main.d2b7f72b.js.map": "/cre-deal-analyzer-enh/static/js/main.d2b7f72b.js.map"
   },
   "entrypoints": [
-    "static/js/main.c2dbce54.js"
+    "static/js/main.d2b7f72b.js"
   ]
 }
