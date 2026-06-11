@@ -1,2 +1,4 @@
 node_modules/
 .cache/
+src/secrets.js
+src/secrets.js
