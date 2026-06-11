@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf";
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
 
 // ─── Access Control ───────────────────────────────────────────────────────────
 const APP_PASSWORD = "InvestAgent_Full1!";
@@ -406,6 +408,249 @@ function MultiLineChart({ cashFlows, rents, rois, timeHorizon }) {
   );
 }
 
+// ─── Document Type Definitions ────────────────────────────────────────────────
+const DOC_TYPES = {
+  OM:      { label: "Offering Memo",   icon: "📋", color: "#C9A84C" },
+  T12:     { label: "T-12 Financials", icon: "📊", color: "#4A9EF5" },
+  UNKNOWN: { label: "Unknown",         icon: "📄", color: "#8A9BB5" },
+};
+
+function detectDocType(text) {
+  const t = text.toLowerCase();
+  const omScore  = (t.includes("offering memorandum")||t.includes("offering memo")?4:0)
+                 + (t.includes("net operating income")||t.includes("noi")?2:0)
+                 + (t.includes("cap rate")?2:0)+(t.includes("investment highlights")?2:0)
+                 + (t.includes("pro forma")?1:0);
+  const t12Score = (t.includes("trailing 12")||t.includes("t-12")||t.includes("t12")?4:0)
+                 + (t.includes("gross revenue")?1:0)+(t.includes("total expenses")?1:0)
+                 + ((t.match(/jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/g)||[]).length>=6?2:0);
+  if (t12Score >= 2 && t12Score >= omScore) return "T12";
+  if (omScore  >= 2) return "OM";
+  return "UNKNOWN";
+}
+
+async function extractPdfText(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
+  let fullText = "";
+  for (let p = 1; p <= Math.min(pdf.numPages, 20); p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent({normalizeWhitespace: true});
+    fullText += content.items.map(i => i.str).join(" ") + "\n";
+  }
+  return fullText;
+}
+
+async function extractWithClaudeCRE(text, docType) {
+  const prompt = `You are a commercial real estate underwriting analyst. Extract the following fields from this ${docType === "T12" ? "Trailing-12-Month income statement" : "Offering Memorandum"} text. Return ONLY a valid JSON object. Use null for any field not found. No markdown, no backticks.
+
+FIELDS: address, city, state, zip, assetClass (e.g. "Office","Retail","Industrial","Multifamily","Mixed-Use"), listPrice (number), buildingSqft (number), lotSizeAcres (number), yearBuilt (number), totalUnits (number if multifamily), occupancyPct (number e.g. 95.0), inPlaceMonthlyRent (number total), annualGrossIncome (number), annualOperatingExpenses (number), noi (number annual), capRate (number as percent e.g. 5.25), leaseType (NNN/Gross/Modified Gross), tenantName (primary tenant), leaseTerm (remaining years number)
+
+DOCUMENT TEXT:
+${text.slice(0, 6000)}`;
+
+  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514", max_tokens: 1000,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  const data = await resp.json();
+  const raw = data?.content?.[0]?.text || "{}";
+  try { return JSON.parse(raw.replace(/```json|```/g, "").trim()); }
+  catch { return { _parseError: true }; }
+}
+
+// ─── OM · T-12 Import Tab (CRE) ───────────────────────────────────────────────
+function OmImportTab({ onLoad }) {
+  const [queue, setQueue]       = useState([]);
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef();
+
+  const processFile = useCallback(async (file, idx) => {
+    if (!file.name.endsWith(".pdf")) {
+      setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "error", error: "Not a PDF file." } : item));
+      return;
+    }
+    setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "detecting" } : item));
+    try {
+      const text = await extractPdfText(file);
+      const docType = detectDocType(text);
+      setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "parsing", docType } : item));
+      const extracted = await extractWithClaudeCRE(text, docType);
+      const result = { ...extracted, fileName: file.name, docType };
+      setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "done", result } : item));
+    } catch (e) {
+      setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "error", error: e.message || "Parse failed." } : item));
+    }
+  }, []);
+
+  const addFiles = useCallback((files) => {
+    const pdfs = Array.from(files).filter(f => f.name.endsWith(".pdf")).slice(0, 8 - queue.length);
+    if (!pdfs.length) return;
+    setQueue(prev => {
+      const startIdx = prev.length;
+      const newItems = pdfs.map(file => ({ file, status: "queued", docType: null, result: null, error: null }));
+      setTimeout(() => { pdfs.forEach((f, i) => processFile(f, startIdx + i)); }, 0);
+      return [...prev, ...newItems];
+    });
+  }, [queue.length, processFile]);
+
+  const removeItem = (idx) => setQueue(q => q.filter((_, i) => i !== idx));
+
+  const dt = (type) => DOC_TYPES[type] || DOC_TYPES.UNKNOWN;
+  const sl = (item) => {
+    if (item.status === "queued")    return { text: "Queued",       color: C.muted };
+    if (item.status === "detecting") return { text: "Reading…",     color: C.gold };
+    if (item.status === "parsing")   return { text: "Extracting…",  color: C.gold };
+    if (item.status === "done")      return { text: "Ready ✓",      color: C.green };
+    if (item.status === "error")     return { text: "Error",        color: C.red };
+    return { text: "—", color: C.muted };
+  };
+
+  return (
+    <div style={{ padding: "0 4px" }}>
+      {/* Drop zone */}
+      <div style={{ background: C.navyMid, borderRadius: 10, padding: "16px",
+        border: `1px solid ${C.border}`, marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: C.gold, fontWeight: 700, marginBottom: 4 }}>
+          📂 Upload CRE Documents
+        </div>
+        <div style={{ fontSize: 11, color: C.muted, marginBottom: 10 }}>
+          Drop up to <strong style={{ color: C.white }}>8 PDFs</strong> at once —
+          Offering Memorandums and T-12 financials are auto-classified and extracted.
+        </div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+          {Object.entries(DOC_TYPES).filter(([k]) => k !== "UNKNOWN").map(([k, v]) => (
+            <div key={k} style={{ display: "flex", alignItems: "center", gap: 4,
+              background: v.color + "18", border: `1px solid ${v.color}40`,
+              borderRadius: 6, padding: "3px 8px", fontSize: 10 }}>
+              <span>{v.icon}</span>
+              <span style={{ color: v.color, fontWeight: 600 }}>{v.label}</span>
+            </div>
+          ))}
+        </div>
+        <div
+          onClick={() => fileRef.current.click()}
+          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={e => { e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files); }}
+          style={{ border: `2px dashed ${dragOver ? C.gold : C.border}`, borderRadius: 10,
+            padding: "28px 16px", textAlign: "center", cursor: "pointer",
+            background: dragOver ? C.navyLt + "80" : C.navyLt, transition: "all 0.2s" }}>
+          <div style={{ fontSize: 28, marginBottom: 8 }}>📂</div>
+          <div style={{ fontSize: 13, color: C.gold, fontWeight: 600 }}>Click to upload or drag & drop</div>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>OM · T-12 — PDF only · max 8 files</div>
+        </div>
+        <input ref={fileRef} type="file" accept=".pdf" multiple style={{ display: "none" }}
+          onChange={e => addFiles(e.target.files)} />
+      </div>
+
+      {/* Queue */}
+      {queue.length > 0 && (
+        <div style={{ background: C.navyMid, borderRadius: 10, padding: "16px",
+          border: `1px solid ${C.border}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between",
+            alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontSize: 12, color: C.gold, fontWeight: 700 }}>
+              📋 Documents ({queue.length}/8)
+            </div>
+            <button onClick={() => setQueue([])} style={{ background: "transparent",
+              border: `1px solid ${C.border}`, color: C.muted, borderRadius: 5,
+              padding: "2px 8px", fontSize: 10, cursor: "pointer" }}>Clear all</button>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {queue.map((item, idx) => {
+              const type = dt(item.docType); const s = sl(item);
+              return (
+                <div key={idx} style={{ background: C.navyLt, borderRadius: 8,
+                  padding: "12px", border: `1px solid ${C.border}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between",
+                    alignItems: "center", marginBottom: item.result ? 8 : 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+                      <span style={{ fontSize: 16 }}>{type.icon}</span>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 11, color: C.white, fontWeight: 600,
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {item.file.name}
+                        </div>
+                        <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
+                          {item.docType && (
+                            <span style={{ fontSize: 9, color: type.color, fontWeight: 700,
+                              background: type.color + "18", borderRadius: 4, padding: "1px 5px" }}>
+                              {type.label}
+                            </span>
+                          )}
+                          <span style={{ fontSize: 9, color: s.color, fontWeight: 600 }}>{s.text}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <button onClick={() => removeItem(idx)} style={{ background: "transparent",
+                      border: "none", color: C.muted, cursor: "pointer",
+                      fontSize: 14, padding: "0 4px", flexShrink: 0 }}>✕</button>
+                  </div>
+
+                  {(item.status === "detecting" || item.status === "parsing") && (
+                    <div style={{ fontSize: 11, color: C.gold, marginTop: 4 }}>
+                      {item.status === "detecting" ? "⏳ Detecting document type…" : "⏳ Extracting CRE financials via AI…"}
+                    </div>
+                  )}
+                  {item.status === "error" && (
+                    <div style={{ fontSize: 11, color: C.red, marginTop: 4 }}>⚠️ {item.error}</div>
+                  )}
+
+                  {item.status === "done" && item.result && (() => {
+                    const r = item.result;
+                    const addr = [r.address, r.city, r.state].filter(Boolean).join(", ");
+                    const pills = [
+                      ["Price",  r.listPrice             ? "$" + Number(r.listPrice).toLocaleString() : null],
+                      ["NOI",    r.noi                   ? "$" + Number(r.noi).toLocaleString() + "/yr" : null],
+                      ["Cap",    r.capRate               ? r.capRate + "%" : null],
+                      ["SF",     r.buildingSqft          ? Number(r.buildingSqft).toLocaleString() + " sf" : null],
+                      ["Occ",    r.occupancyPct          ? r.occupancyPct + "%" : null],
+                      ["Lease",  r.leaseType             || null],
+                    ].filter(([, v]) => v != null);
+                    return (
+                      <>
+                        {addr && (
+                          <div style={{ fontSize: 11, color: C.gold, fontWeight: 600,
+                            marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            📍 {addr}
+                          </div>
+                        )}
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
+                          {pills.map(([k, v]) => (
+                            <div key={k} style={{ background: C.navy, borderRadius: 5, padding: "3px 7px", fontSize: 10 }}>
+                              <span style={{ color: C.muted }}>{k}: </span>
+                              <span style={{ color: C.white, fontWeight: 700 }}>{v}</span>
+                            </div>
+                          ))}
+                        </div>
+                        <button onClick={() => onLoad(r)}
+                          style={{ width: "100%", padding: "9px", background: C.gold,
+                            border: "none", color: C.navy, borderRadius: 7,
+                            cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                          ⚡ Load into Analyzer →
+                        </button>
+                      </>
+                    );
+                  })()}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 10, textAlign: "center" }}>
+            AI extraction reads asking price, NOI, cap rate, SF, occupancy, and lease terms (~3 sec/file)
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Widget ──────────────────────────────────────────────────────────────
 function Widget({ userName }) {
   const [purchasePrice,    setPurchasePrice]    = useState(300000);
@@ -425,7 +670,16 @@ function Widget({ userName }) {
   const [tenantCredit,     setTenantCredit]     = useState("Non-Rated");
   const [emailAddr,        setEmailAddr]        = useState("");
   const [emailSent,        setEmailSent]        = useState(false);
-  const [activeTab,        setActiveTab]        = useState("deal");
+  const [activeTab,        setActiveTab]        = useState("import");
+
+  // Pre-fill analyzer from OM/T-12 extraction
+  const loadFromOm = (r) => {
+    if (r.listPrice)               setPurchasePrice(Number(r.listPrice));
+    if (r.inPlaceMonthlyRent)      setMonthlyRent(Number(r.inPlaceMonthlyRent));
+    if (r.annualOperatingExpenses) setMonthlyExpenses(Math.round(Number(r.annualOperatingExpenses) / 12));
+    if (r.leaseType)               setLeaseType(r.leaseType);
+    setActiveTab("deal");
+  };
 
   const m = calcMetrics({
     purchasePrice, monthlyRent, downPct, mortgageRate, mortgageTerm,
@@ -480,6 +734,7 @@ function Widget({ userName }) {
       {/* Tab bar */}
       <div style={{ background: C.navyMid, borderBottom: `1px solid ${C.border}`,
         display: "flex", flexShrink: 0 }}>
+        {tab("import",  "📂 OM · T-12")}
         {tab("deal",     "Deal Analyzer")}
         {tab("insights", "Insights")}
         {tab("report",   "Agent Report")}
@@ -488,8 +743,8 @@ function Widget({ userName }) {
       {/* Body */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
 
-        {/* Sidebar */}
-        <div style={{ width: 200, background: C.navyMid,
+        {/* Sidebar — hidden on import tab */}
+        {activeTab !== "import" && <div style={{ width: 200, background: C.navyMid,
           borderRight: `1px solid ${C.border}`,
           padding: "14px 12px", overflowY: "auto", flexShrink: 0, fontSize: 12 }}>
 
@@ -568,10 +823,12 @@ function Widget({ userName }) {
               ✓ NNN: Tenant covers all OpEx. Expenses set to $0.
             </div>
           )}
-        </div>
+        </div>}
 
         {/* Main panel */}
         <div style={{ flex: 1, padding: "16px 18px", overflowY: "auto" }}>
+
+          {activeTab === "import" && <OmImportTab onLoad={loadFromOm}/>}
 
           {activeTab === "deal" && <>
             <div style={{ fontSize: 12, color: C.gold, fontWeight: 700, marginBottom: 10 }}>
