@@ -3,12 +3,7 @@ import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf";
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
 
 // ─── Access Control ───────────────────────────────────────────────────────────
-const APP_PASSWORD = "InvestAgent_Full1!";
-const USER_PINS = {
-  masoud: "1234",
-  andy:   "7788",
-  colin:  "8877",
-};
+import { APP_PASSWORD, USER_PINS } from "./secrets";
 
 const C = {
   navy:    "#0F1F3D",
