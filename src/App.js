@@ -692,6 +692,7 @@ function Widget({ userName }) {
     if (r.address || r.city)       setPropAddress([r.address, r.city, r.state].filter(Boolean).join(", "));
     if (r.zip)                     setPropZip(String(r.zip));
     if (r.listPrice)               setPurchasePrice(Number(r.listPrice));
+    else if (r.docType === "T12")    setPurchasePrice(0); // T-12 has no price — user must enter
     if (r.inPlaceMonthlyRent)      setMonthlyRent(Number(r.inPlaceMonthlyRent));
     else if (r.annualGrossIncome)  setMonthlyRent(Math.round(Number(r.annualGrossIncome) / 12));
     if (r.annualOperatingExpenses) setMonthlyExpenses(Math.round(Number(r.annualOperatingExpenses) / 12));
