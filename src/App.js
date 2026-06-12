@@ -662,6 +662,8 @@ function Widget({ userName }) {
   const [rentBumpPct,      setRentBumpPct]      = useState(10);
   const [rentBumpYears,    setRentBumpYears]    = useState(5);
   const [tenantCredit,     setTenantCredit]     = useState("Non-Rated");
+  const [propAddress,      setPropAddress]      = useState("");
+  const [propZip,          setPropZip]          = useState("");
   const [emailAddr,        setEmailAddr]        = useState("");
   const [emailSent,        setEmailSent]        = useState(false);
   const [activeTab,        setActiveTab]        = useState("import");
@@ -669,6 +671,8 @@ function Widget({ userName }) {
 
   // Pre-fill analyzer from OM/T-12 extraction
   const loadFromOm = (r) => {
+    if (r.address || r.city)       setPropAddress([r.address, r.city, r.state].filter(Boolean).join(", "));
+    if (r.zip)                     setPropZip(String(r.zip));
     if (r.listPrice)               setPurchasePrice(Number(r.listPrice));
     if (r.inPlaceMonthlyRent)      setMonthlyRent(Number(r.inPlaceMonthlyRent));
     else if (r.annualGrossIncome)  setMonthlyRent(Math.round(Number(r.annualGrossIncome) / 12));
@@ -755,12 +759,12 @@ function Widget({ userName }) {
           </div>
 
           <Label>Property Address (optional)</Label>
-          <input placeholder="123 Main St" style={{ width: "100%", boxSizing: "border-box",
+          <input placeholder="123 Main St" value={propAddress} onChange={e=>setPropAddress(e.target.value)} style={{ width: "100%", boxSizing: "border-box",
             background: C.navyLt, border: `1px solid ${C.border}`, borderRadius: 5,
             padding: "5px 8px", color: C.white, fontSize: 12, marginBottom: 10 }} />
 
           <Label>ZIP Code (optional)</Label>
-          <input placeholder="94526" style={{ width: "100%", boxSizing: "border-box",
+          <input placeholder="94526" value={propZip} onChange={e=>setPropZip(e.target.value)} style={{ width: "100%", boxSizing: "border-box",
             background: C.navyLt, border: `1px solid ${C.border}`, borderRadius: 5,
             padding: "5px 8px", color: C.white, fontSize: 12, marginBottom: 12 }} />
 
@@ -930,6 +934,7 @@ function Widget({ userName }) {
                   const lines = [
                     "CRE Deal Analyzer — RealEstate-Analytics.ai",
                     "Generated: " + new Date().toLocaleDateString(),
+                    propAddress ? "Property: " + propAddress + (propZip ? " " + propZip : "") : "",
                     "---",
                     "PROPERTY INPUTS",
                     "Acquisition Price: $" + purchasePrice.toLocaleString(),
@@ -966,7 +971,7 @@ function Widget({ userName }) {
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement("a");
                   a.href = url;
-                  a.download = "CRE_Deal_Analysis_" + new Date().toISOString().slice(0,10) + ".txt";
+                  a.download = "CRE_Deal_Analysis_" + (propAddress ? propAddress.replace(/[^a-zA-Z0-9]/g,"_").slice(0,30) + "_" : "") + new Date().toISOString().slice(0,10) + ".txt";
                   a.click();
                   URL.revokeObjectURL(url);
                 }}
