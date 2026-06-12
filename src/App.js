@@ -444,11 +444,11 @@ FIELDS: address, city, state, zip, assetClass (e.g. "Office","Retail","Industria
 DOCUMENT TEXT:
 ${text.slice(0, 6000)}`;
 
-  const resp = await fetch("https://api.anthropic.com/v1/messages", {
+  const resp = await fetch("https://autumn-shape-7ddf.maarouni.workers.dev", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514", max_tokens: 1000,
+      model: "claude-haiku-4-5-20251001", max_tokens: 1000,
       messages: [{ role: "user", content: prompt }],
     }),
   });
