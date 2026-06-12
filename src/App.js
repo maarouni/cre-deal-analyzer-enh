@@ -647,27 +647,45 @@ function OmImportTab({ onLoad, queue, setQueue }) {
 
 // ─── Main Widget ──────────────────────────────────────────────────────────────
 function Widget({ userName }) {
-  const [purchasePrice,    setPurchasePrice]    = useState(300000);
-  const [monthlyRent,      setMonthlyRent]      = useState(2000);
-  const [downPct,          setDownPct]          = useState(20);
-  const [mortgageRate,     setMortgageRate]     = useState(6.5);
-  const [mortgageTerm,     setMortgageTerm]     = useState(30);
-  const [monthlyExpenses,  setMonthlyExpenses]  = useState(300);
-  const [economicVacancy,  setEconomicVacancy]  = useState(5);
-  const [appreciationRate, setAppreciationRate] = useState(3);
-  const [rentGrowthRate,   setRentGrowthRate]   = useState(3);
-  const [timeHorizon,      setTimeHorizon]      = useState(10);
-  const [brokerFeePct,     setBrokerFeePct]     = useState(2.5);
-  const [leaseType,        setLeaseType]        = useState("Gross");
-  const [rentBumpPct,      setRentBumpPct]      = useState(10);
-  const [rentBumpYears,    setRentBumpYears]    = useState(5);
-  const [tenantCredit,     setTenantCredit]     = useState("Non-Rated");
-  const [propAddress,      setPropAddress]      = useState("");
-  const [propZip,          setPropZip]          = useState("");
-  const [emailAddr,        setEmailAddr]        = useState("");
-  const [emailSent,        setEmailSent]        = useState(false);
-  const [activeTab,        setActiveTab]        = useState("import");
-  const [omQueue,          setOmQueue]          = useState([]);
+  const ls = (key, def) => { try { const v = localStorage.getItem("cre_" + key); return v !== null ? JSON.parse(v) : def; } catch { return def; } };
+  const save = (key, val) => { try { localStorage.setItem("cre_" + key, JSON.stringify(val)); } catch {} };
+  const usePersist = (key, def) => {
+    const [val, setVal] = useState(() => ls(key, def));
+    const set = (v) => { const next = typeof v === "function" ? v(val) : v; save(key, next); setVal(next); };
+    return [val, set];
+  };
+  const [purchasePrice,    setPurchasePrice]    = usePersist("purchasePrice", 300000);
+  const [monthlyRent,      setMonthlyRent]      = usePersist("monthlyRent", 2000);
+  const [downPct,          setDownPct]          = usePersist("downPct", 20);
+  const [mortgageRate,     setMortgageRate]     = usePersist("mortgageRate", 6.5);
+  const [mortgageTerm,     setMortgageTerm]     = usePersist("mortgageTerm", 30);
+  const [monthlyExpenses,  setMonthlyExpenses]  = usePersist("monthlyExpenses", 300);
+  const [economicVacancy,  setEconomicVacancy]  = usePersist("economicVacancy", 5);
+  const [appreciationRate, setAppreciationRate] = usePersist("appreciationRate", 3);
+  const [rentGrowthRate,   setRentGrowthRate]   = usePersist("rentGrowthRate", 3);
+  const [timeHorizon,      setTimeHorizon]      = usePersist("timeHorizon", 10);
+  const [brokerFeePct,     setBrokerFeePct]     = usePersist("brokerFeePct", 2.5);
+  const [leaseType,        setLeaseType]        = usePersist("leaseType", "Gross");
+  const [rentBumpPct,      setRentBumpPct]      = usePersist("rentBumpPct", 10);
+  const [rentBumpYears,    setRentBumpYears]    = usePersist("rentBumpYears", 5);
+  const [tenantCredit,     setTenantCredit]     = usePersist("tenantCredit", "Non-Rated");
+  const [propAddress,      setPropAddress]      = usePersist("propAddress", "");
+  const [propZip,          setPropZip]          = usePersist("propZip", "");
+  const [activeTab,        setActiveTab]        = usePersist("activeTab", "import");
+  const [omQueue, setOmQueueRaw] = useState(() => {
+    try { const q = JSON.parse(localStorage.getItem("cre_omQueue") || "[]");
+      return q.map(item => ({...item, file: null, status: item.status === "done" ? "done" : "queued"}));
+    } catch { return []; }
+  });
+  const setOmQueue = (updater) => {
+    setOmQueueRaw(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      try { localStorage.setItem("cre_omQueue", JSON.stringify(next.map(({file, ...rest}) => rest))); } catch {}
+      return next;
+    });
+  };
+  const [emailAddr,  setEmailAddr]  = useState("");
+  const [emailSent,  setEmailSent]  = useState(false);
 
   // Pre-fill analyzer from OM/T-12 extraction
   const loadFromOm = (r) => {
@@ -757,6 +775,13 @@ function Widget({ userName }) {
             letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 }}>
             🚀 Property Information
           </div>
+
+          <button onClick={() => {
+            try { Object.keys(localStorage).filter(k=>k.startsWith("cre_")).forEach(k=>localStorage.removeItem(k)); } catch {}
+            window.location.reload();
+          }} style={{width:"100%",padding:"5px",marginBottom:10,background:"transparent",
+            border:`1px solid ${C.border}`,color:C.muted,borderRadius:5,
+            fontSize:10,cursor:"pointer"}}>↺ Clear Deal &amp; Reset</button>
 
           <Label>Property Address (optional)</Label>
           <input placeholder="123 Main St" value={propAddress} onChange={e=>setPropAddress(e.target.value)} style={{ width: "100%", boxSizing: "border-box",
