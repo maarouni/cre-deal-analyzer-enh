@@ -459,8 +459,7 @@ ${text.slice(0, 6000)}`;
 }
 
 // ─── OM · T-12 Import Tab (CRE) ───────────────────────────────────────────────
-function OmImportTab({ onLoad }) {
-  const [queue, setQueue]       = useState([]);
+function OmImportTab({ onLoad, queue, setQueue }) {
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef();
 
@@ -666,13 +665,20 @@ function Widget({ userName }) {
   const [emailAddr,        setEmailAddr]        = useState("");
   const [emailSent,        setEmailSent]        = useState(false);
   const [activeTab,        setActiveTab]        = useState("import");
+  const [omQueue,          setOmQueue]          = useState([]);
 
   // Pre-fill analyzer from OM/T-12 extraction
   const loadFromOm = (r) => {
     if (r.listPrice)               setPurchasePrice(Number(r.listPrice));
     if (r.inPlaceMonthlyRent)      setMonthlyRent(Number(r.inPlaceMonthlyRent));
+    else if (r.annualGrossIncome)  setMonthlyRent(Math.round(Number(r.annualGrossIncome) / 12));
     if (r.annualOperatingExpenses) setMonthlyExpenses(Math.round(Number(r.annualOperatingExpenses) / 12));
-    if (r.leaseType)               setLeaseType(r.leaseType);
+    if (r.leaseType) {
+      const lt = r.leaseType.toString().toUpperCase();
+      if (lt.includes("NNN") || lt.includes("TRIPLE")) setLeaseType("NNN");
+      else if (lt.includes("MODIFIED")) setLeaseType("Modified Gross");
+      else setLeaseType("Gross");
+    }
     setActiveTab("deal");
   };
 
@@ -823,7 +829,7 @@ function Widget({ userName }) {
         {/* Main panel */}
         <div style={{ flex: 1, padding: "16px 18px", overflowY: "auto" }}>
 
-          {activeTab === "import" && <OmImportTab onLoad={loadFromOm}/>}
+          {activeTab === "import" && <OmImportTab onLoad={loadFromOm} queue={omQueue} setQueue={setOmQueue}/>}
 
           {activeTab === "deal" && <>
             <div style={{ fontSize: 12, color: C.gold, fontWeight: 700, marginBottom: 10 }}>
