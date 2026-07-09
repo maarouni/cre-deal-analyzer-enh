@@ -427,13 +427,34 @@ function detectDocType(text) {
 async function extractPdfText(file) {
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
-  let fullText = "";
-  for (let p = 1; p <= Math.min(pdf.numPages, 20); p++) {
+  // Was capped at 20 pages — CBRE-style OMs put the entire Financials
+  // section (Executive Summary, Rent Roll, Cash Flow) in the back half of
+  // the document, well past page 20 on anything 30+ pages long. Read the
+  // whole document (up to a sane ceiling) instead.
+  const maxPages = Math.min(pdf.numPages, 75);
+  const pageTexts = [];
+  for (let p = 1; p <= maxPages; p++) {
     const page = await pdf.getPage(p);
     const content = await page.getTextContent({normalizeWhitespace: true});
-    fullText += content.items.map(i => i.str).join(" ") + "\n";
+    pageTexts.push(content.items.map(i => i.str).join(" "));
   }
-  return fullText;
+  return pageTexts; // array, one entry per page — lets callers prioritize
+}
+
+// Pages whose text matches these are almost certainly where the real
+// numbers live (rent rolls, cash flow tables, executive summaries, T-12s).
+const FIN_KEYWORDS = /rent\s*roll|net operating income|\bnoi\b|operating expense|cash flow|executive summary|capitalization rate|cap rate|trailing[- ]?12|\bt-?12\b|debt (service|coverage)|dscr|gross (scheduled|potential) income|total expenses|expense recover/i;
+
+// Build the text actually sent to the extraction model. If the whole
+// document is small, just send it all. Otherwise, keep the first few
+// pages (address/price/property description) plus every page that looks
+// financial, so long documents don't silently drop their numbers.
+function buildExtractionText(pageTexts, maxChars = 45000) {
+  const full = pageTexts.join("\n");
+  if (full.length <= maxChars) return full;
+  const picked = pageTexts.filter((t, i) => i < 5 || FIN_KEYWORDS.test(t));
+  const text = picked.join("\n");
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
 }
 
 function normNum(val) {
@@ -450,8 +471,9 @@ function normNum(val) {
   return isNaN(n) ? null : n;
 }
 
-async function extractWithClaudeCRE(text, docType) {
+async function extractWithClaudeCRE(pageTexts, docType) {
   const isT12 = docType === "T12";
+  const text = buildExtractionText(pageTexts);
   const prompt = `You are a commercial real estate underwriting analyst. Extract fields from this ${isT12 ? "Trailing-12-Month income statement" : "Offering Memorandum"}.
 
 RULES:
@@ -471,7 +493,7 @@ RULES:
 FIELDS: address, city, state, zip, assetClass, listPrice, buildingSqft, lotSizeAcres, yearBuilt, totalUnits, occupancyPct, inPlaceMonthlyRent, annualGrossIncome, annualOperatingExpenses, noi, capRate, leaseType, tenantName, leaseTerm
 
 DOCUMENT TEXT:
-${text.slice(0, 12000)}`;
+${text}`;
 
   try {
     const resp = await fetch("https://autumn-shape-7ddf.maarouni.workers.dev", {
@@ -508,10 +530,10 @@ function OmImportTab({ onLoad, queue, setQueue }) {
     }
     setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "detecting" } : item));
     try {
-      const text = await extractPdfText(file);
-      const docType = detectDocType(text);
+      const pageTexts = await extractPdfText(file);
+      const docType = detectDocType(pageTexts.join("\n"));
       setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "parsing", docType } : item));
-      const extracted = await extractWithClaudeCRE(text, docType);
+      const extracted = await extractWithClaudeCRE(pageTexts, docType);
       if (extracted._parseError) {
         setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "error",
           error: extracted._errorMsg || "AI extraction failed — try re-uploading." } : item));
@@ -661,6 +683,9 @@ function OmImportTab({ onLoad, queue, setQueue }) {
                       ["Lease",  r.leaseType             || null],
                     ].filter(([, v]) => v != null);
                     const hasData = pills.length > 0 || !!addr;
+                    const isNNN = (r.leaseType || "").toString().toUpperCase().includes("NNN");
+                    const missingRent = !r.inPlaceMonthlyRent && !r.annualGrossIncome;
+                    const missingOpex = !r.annualOperatingExpenses && !isNNN; // NNN: tenant covers OpEx directly — nothing to find, not an error
                     return (
                       <>
                         {!hasData && (
@@ -668,6 +693,13 @@ function OmImportTab({ onLoad, queue, setQueue }) {
                             background: "#7B4A0022", border: "1px solid #C9A84C40",
                             borderRadius: 6, padding: "6px 10px" }}>
                             ⚠️ No financial data extracted. This may be image-based, scanned, or non-CRE. Manual entry required.
+                          </div>
+                        )}
+                        {hasData && (missingRent || missingOpex) && (
+                          <div style={{ fontSize: 11, color: "#E8A020", marginBottom: 8,
+                            background: "#7B4A0022", border: "1px solid #C9A84C40",
+                            borderRadius: 6, padding: "6px 10px" }}>
+                            ⚠️ {missingRent && missingOpex ? "Rent and OpEx were" : missingRent ? "Rent was" : "OpEx was"} not found in this document — enter {missingRent && missingOpex ? "them" : "it"} manually after loading.
                           </div>
                         )}
                         {addr && (
@@ -748,7 +780,9 @@ function Widget({ userName }) {
       return next;
     });
   };
-  const [needsPrice, setNeedsPrice] = usePersist("needsPrice", false);
+  const [needsPrice,    setNeedsPrice]    = usePersist("needsPrice", false);
+  const [needsRent,     setNeedsRent]     = usePersist("needsRent", false);
+  const [needsExpenses, setNeedsExpenses] = usePersist("needsExpenses", false);
   const [emailAddr,  setEmailAddr]  = useState("");
   const [emailSent,  setEmailSent]  = useState(false);
 
@@ -758,14 +792,25 @@ function Widget({ userName }) {
     if (r.zip)                     setPropZip(String(r.zip));
     if (r.listPrice) { setPurchasePrice(Number(r.listPrice)); setNeedsPrice(false); }
     else if (r.docType === "T12") { setPurchasePrice(0); setNeedsPrice(true); }
-    else if (r.docType === "T12")    setPurchasePrice(0); // T-12 has no price — user must enter
-    if (r.inPlaceMonthlyRent)      setMonthlyRent(Number(r.inPlaceMonthlyRent));
-    else if (r.annualGrossIncome)  setMonthlyRent(Math.round(Number(r.annualGrossIncome) / 12));
-    if (r.annualOperatingExpenses) setMonthlyExpenses(Math.round(Number(r.annualOperatingExpenses) / 12));
+
+    // Rent and OpEx: only overwrite the field when the extraction actually
+    // found something. If it didn't, DON'T silently leave whatever number
+    // happened to be sitting in state (e.g. the $2,000/$300 defaults) —
+    // flag it so the sidebar warns the user the field needs manual entry.
+    if (r.inPlaceMonthlyRent)      { setMonthlyRent(Number(r.inPlaceMonthlyRent)); setNeedsRent(false); }
+    else if (r.annualGrossIncome)  { setMonthlyRent(Math.round(Number(r.annualGrossIncome) / 12)); setNeedsRent(false); }
+    else                            setNeedsRent(true);
+
+    const ltRaw = (r.leaseType || "").toString().toUpperCase();
+    const isNNN = ltRaw.includes("NNN") || ltRaw.includes("TRIPLE");
+
+    if (r.annualOperatingExpenses) { setMonthlyExpenses(Math.round(Number(r.annualOperatingExpenses) / 12)); setNeedsExpenses(false); }
+    else if (isNNN)                { setMonthlyExpenses(0); setNeedsExpenses(false); } // NNN: tenant pays OpEx directly — $0 is the correct value, not whatever was left over from the last deal loaded
+    else                            setNeedsExpenses(true);
+
     if (r.leaseType) {
-      const lt = r.leaseType.toString().toUpperCase();
-      if (lt.includes("NNN") || lt.includes("TRIPLE")) setLeaseType("NNN");
-      else if (lt.includes("MODIFIED")) setLeaseType("Modified Gross");
+      if (isNNN) setLeaseType("NNN");
+      else if (ltRaw.includes("MODIFIED")) setLeaseType("Modified Gross");
       else setLeaseType("Gross");
     }
     setActiveTab("deal");
@@ -870,13 +915,25 @@ function Widget({ userName }) {
             min={50000} max={50000000} step={10000}
             display={v => "$" + v.toLocaleString()} onChange={v=>{setPurchasePrice(v);setNeedsPrice(false);}} />
 
+          {needsRent && (
+            <div style={{background:"#7B4A0022",border:"1px solid #C9A84C",borderRadius:6,
+              padding:"7px 10px",marginBottom:8,fontSize:11,color:"#C9A84C"}}>
+              ⚠️ Rent wasn&apos;t found in this document — the value below is a placeholder, not real data. Enter it manually.
+            </div>
+          )}
           <PlusMinusInput label="In-Place Rent ($/mo)" value={monthlyRent}
             min={200} max={500000} step={100}
-            display={v => "$" + v.toLocaleString()} onChange={setMonthlyRent} />
+            display={v => "$" + v.toLocaleString()} onChange={v=>{setMonthlyRent(v);setNeedsRent(false);}} />
 
+          {needsExpenses && (
+            <div style={{background:"#7B4A0022",border:"1px solid #C9A84C",borderRadius:6,
+              padding:"7px 10px",marginBottom:8,fontSize:11,color:"#C9A84C"}}>
+              ⚠️ Operating expenses weren&apos;t found in this document — the value below is a placeholder, not real data. Enter it manually.
+            </div>
+          )}
           <PlusMinusInput label="Operating Expenses (OpEx) ($/mo)" value={monthlyExpenses}
             min={0} max={200000} step={50}
-            display={v => "$" + v.toLocaleString()} onChange={setMonthlyExpenses}
+            display={v => "$" + v.toLocaleString()} onChange={v=>{setMonthlyExpenses(v);setNeedsExpenses(false);}}
             note="Includes property tax, insurance, and miscellaneous costs" />
 
           <SelectInput label="Lease Type" value={leaseType}
