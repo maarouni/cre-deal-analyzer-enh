@@ -1,2 +1,4 @@
 node_modules/
 .cache/
+test-results/
+playwright-output.txt

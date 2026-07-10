@@ -519,7 +519,7 @@ ${text}`;
 }
 
 // ─── OM · T-12 Import Tab (CRE) ───────────────────────────────────────────────
-function OmImportTab({ onLoad, queue, setQueue }) {
+function OmImportTab({ onLoad, queue, setQueue, openDealInNewTab }) {
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef();
 
@@ -718,13 +718,25 @@ function OmImportTab({ onLoad, queue, setQueue }) {
                             ))}
                           </div>
                         )}
-                        <button onClick={() => onLoad(r)}
-                          style={{ width: "100%", padding: "9px",
-                            background: hasData ? C.gold : C.muted,
-                            border: "none", color: C.navy, borderRadius: 7,
-                            cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
-                          {hasData ? "⚡ Load into Analyzer →" : "⚡ Load anyway (manual entry required)"}
-                        </button>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button onClick={() => onLoad(r, idx)}
+                            style={{ flex: 1, padding: "9px",
+                              background: hasData ? C.gold : C.muted,
+                              border: "none", color: C.navy, borderRadius: 7,
+                              cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                            {hasData ? "⚡ Load into Analyzer →" : "⚡ Load anyway (manual entry required)"}
+                          </button>
+                          {item.dealId && (
+                            <button onClick={() => openDealInNewTab(item.dealId)}
+                              title="Open this deal in a new browser tab"
+                              style={{ padding: "9px 12px",
+                                background: "transparent", border: `1px solid ${C.border}`,
+                                color: C.muted, borderRadius: 7,
+                                cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                              ↗
+                            </button>
+                          )}
+                        </div>
                       </>
                     );
                   })()}
@@ -741,10 +753,280 @@ function OmImportTab({ onLoad, queue, setQueue }) {
   );
 }
 
+// ─── Multi-deal storage helpers ───────────────────────────────────────────────
+// Each loaded OM/T-12 gets its own storage namespace instead of one shared
+// bucket, so several deals can be loaded — and compared — without
+// overwriting each other's numbers.
+function makeId() {
+  return (typeof crypto !== "undefined" && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : "d" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+const DEAL_FIELDS = [
+  ["purchasePrice", 300000], ["monthlyRent", 2000], ["downPct", 20],
+  ["mortgageRate", 6.5], ["mortgageTerm", 30], ["monthlyExpenses", 300],
+  ["economicVacancy", 5], ["appreciationRate", 3], ["rentGrowthRate", 3],
+  ["timeHorizon", 10], ["brokerFeePct", 2.5], ["leaseType", "Gross"],
+  ["rentBumpPct", 10], ["rentBumpYears", 5], ["tenantCredit", "Non-Rated"],
+  ["propAddress", ""], ["propZip", ""],
+  ["needsPrice", false], ["needsRent", false], ["needsExpenses", false],
+];
+
+function dealKey(dealId, field) { return "cre_deal_" + dealId + "_" + field; }
+function readDealField(dealId, field, def) {
+  try { const v = localStorage.getItem(dealKey(dealId, field)); return v !== null ? JSON.parse(v) : def; } catch { return def; }
+}
+function writeDealField(dealId, field, value) {
+  try { localStorage.setItem(dealKey(dealId, field), JSON.stringify(value)); } catch {}
+}
+function readDealBundle(dealId) {
+  const bundle = {};
+  DEAL_FIELDS.forEach(([key, def]) => { bundle[key] = readDealField(dealId, key, def); });
+  return bundle;
+}
+function readDealIndex() {
+  try { return JSON.parse(localStorage.getItem("cre_dealIndex") || "[]"); } catch { return []; }
+}
+function writeDealIndex(idx) {
+  try { localStorage.setItem("cre_dealIndex", JSON.stringify(idx)); } catch {}
+}
+
+// Same field-mapping logic that used to live inline in loadFromOm, but
+// writes straight to a deal's storage slot instead of through React
+// setters, since the deal being loaded may not be the mounted/active one.
+// Preserves any financing/growth assumptions already saved for this deal
+// (e.g. re-loading the same document after tweaking its inputs).
+function applyExtractionToDeal(dealId, r) {
+  const next = readDealBundle(dealId);
+
+  if (r.address || r.city) next.propAddress = [r.address, r.city, r.state].filter(Boolean).join(", ");
+  if (r.zip) next.propZip = String(r.zip);
+
+  if (r.listPrice) { next.purchasePrice = Number(r.listPrice); next.needsPrice = false; }
+  else if (r.docType === "T12") { next.purchasePrice = 0; next.needsPrice = true; }
+
+  if (r.inPlaceMonthlyRent)      { next.monthlyRent = Number(r.inPlaceMonthlyRent); next.needsRent = false; }
+  else if (r.annualGrossIncome)  { next.monthlyRent = Math.round(Number(r.annualGrossIncome) / 12); next.needsRent = false; }
+  else                            next.needsRent = true;
+
+  const ltRaw = (r.leaseType || "").toString().toUpperCase();
+  const isNNN = ltRaw.includes("NNN") || ltRaw.includes("TRIPLE");
+
+  if (r.annualOperatingExpenses) { next.monthlyExpenses = Math.round(Number(r.annualOperatingExpenses) / 12); next.needsExpenses = false; }
+  else if (isNNN)                { next.monthlyExpenses = 0; next.needsExpenses = false; }
+  else                            next.needsExpenses = true;
+
+  if (r.leaseType) {
+    if (isNNN) next.leaseType = "NNN";
+    else if (ltRaw.includes("MODIFIED")) next.leaseType = "Modified Gross";
+    else next.leaseType = "Gross";
+  }
+
+  DEAL_FIELDS.forEach(([key]) => writeDealField(dealId, key, next[key]));
+  return next;
+}
+
+// Plain global (not deal-scoped) persistence — for app-level state like
+// which tab is active, shared across every loaded deal.
+function useGlobalPersist(key, def) {
+  const [val, setVal] = useState(() => {
+    try { const v = localStorage.getItem("cre_" + key); return v !== null ? JSON.parse(v) : def; } catch { return def; }
+  });
+  const set = (v) => {
+    setVal(prev => {
+      const next = typeof v === "function" ? v(prev) : v;
+      try { localStorage.setItem("cre_" + key, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
+  return [val, set];
+}
+
+// ─── Compare Tab ────────────────────────────────────────────────────────────
+function CompareTab({ dealIndex, switchToDeal, openDealInNewTab, removeFromCompare }) {
+  const rows = dealIndex.map(d => {
+    const bundle = readDealBundle(d.id);
+    const m = calcMetrics(bundle);
+    const grade = m.coc >= 15 ? "A" : m.coc >= 12 ? "B" : m.coc >= 9 ? "C" : m.coc >= 6 ? "D" : "F";
+    const gCol = { A: C.green, B: "#6FCF97", C: C.gold, D: C.orange, F: C.red }[grade];
+    return { id: d.id, address: bundle.propAddress || d.address || d.fileName || "Untitled Deal", bundle, m, grade, gCol };
+  });
+
+  if (rows.length === 0) {
+    return (
+      <div style={{ background: C.navyMid, borderRadius: 10, padding: "28px",
+        border: `1px solid ${C.border}`, textAlign: "center", color: C.muted, fontSize: 13 }}>
+        No deals loaded yet. Go to the OM · T-12 tab, upload documents, and click
+        "Load into Analyzer" on each one you want to compare.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: C.gold, fontWeight: 700, marginBottom: 10 }}>
+        ⚖️ Comparing {rows.length} Deal{rows.length !== 1 ? "s" : ""}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 10 }}>
+        {rows.map(row => (
+          <div key={row.id} style={{ background: C.navyMid, borderRadius: 10,
+            border: `1px solid ${C.border}`, padding: "12px 14px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 6 }}>
+              <div style={{ fontSize: 11, color: C.white, fontWeight: 700, overflow: "hidden",
+                textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 150 }} title={row.address}>{row.address}</div>
+              <div style={{ background: row.gCol + "22", border: `1.5px solid ${row.gCol}`,
+                borderRadius: 6, padding: "1px 7px", fontSize: 11, fontWeight: 900, color: row.gCol, flexShrink: 0 }}>{row.grade}</div>
+            </div>
+            <div style={{ fontSize: 10, color: C.muted, marginBottom: 8 }}>
+              ${Number(row.bundle.purchasePrice).toLocaleString()} · {row.bundle.leaseType}
+            </div>
+            {[
+              ["Cap Rate", row.m.capRate.toFixed(2) + "%"],
+              ["DSCR", row.m.dscr.toFixed(2) + "×"],
+              ["Cash-on-Cash", row.m.coc.toFixed(2) + "%"],
+              ["IRR (Total)", row.m.irrTotal != null ? row.m.irrTotal.toFixed(2) + "%" : "N/A"],
+              ["Equity Multiple", row.m.eqMult.toFixed(2) + "×"],
+              ["Yr 1 Cash Flow", "$" + Math.round(row.m.cf1).toLocaleString()],
+            ].map(([k, v]) => (
+              <div key={k} style={{ display: "flex", justifyContent: "space-between",
+                fontSize: 11, padding: "3px 0", borderBottom: `1px solid ${C.gridLine}` }}>
+                <span style={{ color: C.muted }}>{k}</span>
+                <span style={{ color: C.white, fontWeight: 700 }}>{v}</span>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+              <button onClick={() => switchToDeal(row.id)} style={{ flex: 1, padding: "7px",
+                background: C.gold, border: "none", color: C.navy, borderRadius: 6,
+                cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Edit</button>
+              <button onClick={() => openDealInNewTab(row.id)} style={{ flex: 1, padding: "7px",
+                background: "transparent", border: `1px solid ${C.border}`, color: C.muted,
+                borderRadius: 6, cursor: "pointer", fontSize: 11, fontWeight: 700 }}>Open in Tab ↗</button>
+            </div>
+            <button onClick={() => removeFromCompare(row.id)} style={{ width: "100%", marginTop: 6,
+              padding: "5px", background: "transparent", border: "none", color: C.muted,
+              cursor: "pointer", fontSize: 10 }}>Remove from comparison</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Widget ──────────────────────────────────────────────────────────────
+// Widget owns app-level state shared across every loaded deal: which tab
+// you're on, the document queue, and the registry of loaded deals. Per-deal
+// inputs (price, rent, financing assumptions, etc.) live in DealWorkspace,
+// keyed by dealId — React fully remounts DealWorkspace when you switch
+// deals, so each one reads its own storage slot fresh instead of inheriting
+// whatever was in memory for the previous deal.
 function Widget({ userName }) {
-  const ls = (key, def) => { try { const v = localStorage.getItem("cre_" + key); return v !== null ? JSON.parse(v) : def; } catch { return def; } };
-  const save = (key, val) => { try { localStorage.setItem("cre_" + key, JSON.stringify(val)); } catch {} };
+  const [activeTab, setActiveTab] = useGlobalPersist("activeTab", "import");
+
+  const [omQueue, setOmQueueRaw] = useState(() => {
+    try { const q = JSON.parse(localStorage.getItem("cre_omQueue") || "[]");
+      return q.map(item => ({...item, file: null, status: item.status === "done" ? "done" : "queued"}));
+    } catch { return []; }
+  });
+  const setOmQueue = (updater) => {
+    setOmQueueRaw(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      try { localStorage.setItem("cre_omQueue", JSON.stringify(next.map(({file, ...rest}) => rest))); } catch {}
+      return next;
+    });
+  };
+
+  const [dealIndex, setDealIndexState] = useState(() => readDealIndex());
+  const setDealIndex = (updater) => {
+    setDealIndexState(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      writeDealIndex(next);
+      return next;
+    });
+  };
+
+  const [activeDealId, setActiveDealIdState] = useState(() => {
+    try {
+      const urlId = new URLSearchParams(window.location.search).get("deal");
+      const idx = readDealIndex();
+      if (urlId && idx.some(d => d.id === urlId)) return urlId;
+
+      // One-time migration: if this is the first load after the multi-deal
+      // update and there's data sitting under the old flat keys, adopt it
+      // as the first deal instead of losing it.
+      if (idx.length === 0 && localStorage.getItem("cre_purchasePrice") !== null) {
+        const legacyId = makeId();
+        DEAL_FIELDS.forEach(([key]) => {
+          const old = localStorage.getItem("cre_" + key);
+          if (old !== null) localStorage.setItem(dealKey(legacyId, key), old);
+        });
+        let addr = "Untitled Deal";
+        try { const a = JSON.parse(localStorage.getItem("cre_propAddress") || '""'); if (a) addr = a; } catch {}
+        writeDealIndex([{ id: legacyId, address: addr, updatedAt: Date.now() }]);
+        return legacyId;
+      }
+
+      const last = localStorage.getItem("cre_lastActiveDeal");
+      if (last && idx.some(d => d.id === last)) return last;
+      if (idx.length > 0) return idx[idx.length - 1].id;
+    } catch {}
+    return makeId();
+  });
+  const setActiveDealId = (id) => {
+    try { localStorage.setItem("cre_lastActiveDeal", id); } catch {}
+    setActiveDealIdState(id);
+  };
+
+  // Load (or re-load) an extraction result into its own deal slot, then
+  // switch this tab to view it. Re-clicking "Load into Analyzer" on a
+  // document you already loaded updates that same deal instead of
+  // creating a duplicate.
+  const loadFromOm = (r, queueIdx) => {
+    const dealId = omQueue[queueIdx]?.dealId || makeId();
+    const bundle = applyExtractionToDeal(dealId, r);
+    setDealIndex(idx => {
+      const filtered = idx.filter(d => d.id !== dealId);
+      return [...filtered, { id: dealId, address: bundle.propAddress || r.fileName || "Untitled Deal", fileName: r.fileName, docType: r.docType, updatedAt: Date.now() }];
+    });
+    setOmQueue(q => q.map((item, i) => i === queueIdx ? { ...item, dealId } : item));
+    setActiveDealId(dealId);
+    setActiveTab("deal");
+  };
+
+  const switchToDeal = (id) => { setActiveDealId(id); setActiveTab("deal"); };
+
+  const openDealInNewTab = (id) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("deal", id);
+    window.open(url.toString(), "_blank");
+  };
+
+  const removeFromCompare = (id) => {
+    setDealIndex(idx => idx.filter(d => d.id !== id));
+  };
+
+  return (
+    <DealWorkspace
+      key={activeDealId}
+      dealId={activeDealId}
+      userName={userName}
+      activeTab={activeTab}
+      setActiveTab={setActiveTab}
+      omQueue={omQueue}
+      setOmQueue={setOmQueue}
+      loadFromOm={loadFromOm}
+      dealIndex={dealIndex}
+      switchToDeal={switchToDeal}
+      openDealInNewTab={openDealInNewTab}
+      removeFromCompare={removeFromCompare}
+    />
+  );
+}
+
+function DealWorkspace({ dealId, userName, activeTab, setActiveTab, omQueue, setOmQueue,
+  loadFromOm, dealIndex, switchToDeal, openDealInNewTab, removeFromCompare }) {
+  const ls = (key, def) => { try { const v = localStorage.getItem(dealKey(dealId, key)); return v !== null ? JSON.parse(v) : def; } catch { return def; } };
+  const save = (key, val) => { try { localStorage.setItem(dealKey(dealId, key), JSON.stringify(val)); } catch {} };
   const usePersist = (key, def) => {
     const [val, setVal] = useState(() => ls(key, def));
     const set = (v) => { const next = typeof v === "function" ? v(val) : v; save(key, next); setVal(next); };
@@ -767,54 +1049,11 @@ function Widget({ userName }) {
   const [tenantCredit,     setTenantCredit]     = usePersist("tenantCredit", "Non-Rated");
   const [propAddress,      setPropAddress]      = usePersist("propAddress", "");
   const [propZip,          setPropZip]          = usePersist("propZip", "");
-  const [activeTab,        setActiveTab]        = usePersist("activeTab", "import");
-  const [omQueue, setOmQueueRaw] = useState(() => {
-    try { const q = JSON.parse(localStorage.getItem("cre_omQueue") || "[]");
-      return q.map(item => ({...item, file: null, status: item.status === "done" ? "done" : "queued"}));
-    } catch { return []; }
-  });
-  const setOmQueue = (updater) => {
-    setOmQueueRaw(prev => {
-      const next = typeof updater === "function" ? updater(prev) : updater;
-      try { localStorage.setItem("cre_omQueue", JSON.stringify(next.map(({file, ...rest}) => rest))); } catch {}
-      return next;
-    });
-  };
   const [needsPrice,    setNeedsPrice]    = usePersist("needsPrice", false);
   const [needsRent,     setNeedsRent]     = usePersist("needsRent", false);
   const [needsExpenses, setNeedsExpenses] = usePersist("needsExpenses", false);
   const [emailAddr,  setEmailAddr]  = useState("");
   const [emailSent,  setEmailSent]  = useState(false);
-
-  // Pre-fill analyzer from OM/T-12 extraction
-  const loadFromOm = (r) => {
-    if (r.address || r.city)       setPropAddress([r.address, r.city, r.state].filter(Boolean).join(", "));
-    if (r.zip)                     setPropZip(String(r.zip));
-    if (r.listPrice) { setPurchasePrice(Number(r.listPrice)); setNeedsPrice(false); }
-    else if (r.docType === "T12") { setPurchasePrice(0); setNeedsPrice(true); }
-
-    // Rent and OpEx: only overwrite the field when the extraction actually
-    // found something. If it didn't, DON'T silently leave whatever number
-    // happened to be sitting in state (e.g. the $2,000/$300 defaults) —
-    // flag it so the sidebar warns the user the field needs manual entry.
-    if (r.inPlaceMonthlyRent)      { setMonthlyRent(Number(r.inPlaceMonthlyRent)); setNeedsRent(false); }
-    else if (r.annualGrossIncome)  { setMonthlyRent(Math.round(Number(r.annualGrossIncome) / 12)); setNeedsRent(false); }
-    else                            setNeedsRent(true);
-
-    const ltRaw = (r.leaseType || "").toString().toUpperCase();
-    const isNNN = ltRaw.includes("NNN") || ltRaw.includes("TRIPLE");
-
-    if (r.annualOperatingExpenses) { setMonthlyExpenses(Math.round(Number(r.annualOperatingExpenses) / 12)); setNeedsExpenses(false); }
-    else if (isNNN)                { setMonthlyExpenses(0); setNeedsExpenses(false); } // NNN: tenant pays OpEx directly — $0 is the correct value, not whatever was left over from the last deal loaded
-    else                            setNeedsExpenses(true);
-
-    if (r.leaseType) {
-      if (isNNN) setLeaseType("NNN");
-      else if (ltRaw.includes("MODIFIED")) setLeaseType("Modified Gross");
-      else setLeaseType("Gross");
-    }
-    setActiveTab("deal");
-  };
 
   const m = calcMetrics({
     purchasePrice, monthlyRent, downPct, mortgageRate, mortgageTerm,
@@ -871,6 +1110,7 @@ function Widget({ userName }) {
         display: "flex", flexShrink: 0 }}>
         {tab("import",  "📂 OM · T-12")}
         {tab("deal",     "Deal Analyzer")}
+        {tab("compare",  `⚖️ Compare${dealIndex.length ? " (" + dealIndex.length + ")" : ""}`)}
         {tab("insights", "Insights")}
         {tab("report",   "Agent Report")}
       </div>
@@ -878,8 +1118,8 @@ function Widget({ userName }) {
       {/* Body */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
 
-        {/* Sidebar — hidden on import tab */}
-        {activeTab !== "import" && <div style={{ width: 200, background: C.navyMid,
+        {/* Sidebar — hidden on import and compare tabs */}
+        {activeTab !== "import" && activeTab !== "compare" && <div style={{ width: 200, background: C.navyMid,
           borderRight: `1px solid ${C.border}`,
           padding: "14px 12px", overflowY: "auto", flexShrink: 0, fontSize: 12 }}>
 
@@ -889,7 +1129,8 @@ function Widget({ userName }) {
           </div>
 
           <button onClick={() => {
-            try { Object.keys(localStorage).filter(k=>k.startsWith("cre_")).forEach(k=>localStorage.removeItem(k)); } catch {}
+            if (!window.confirm("Reset this deal's inputs to defaults? Your other loaded deals won't be affected.")) return;
+            try { DEAL_FIELDS.forEach(([key]) => localStorage.removeItem(dealKey(dealId, key))); } catch {}
             window.location.reload();
           }} style={{width:"100%",padding:"5px",marginBottom:10,background:"transparent",
             border:`1px solid ${C.border}`,color:C.muted,borderRadius:5,
@@ -988,7 +1229,10 @@ function Widget({ userName }) {
         {/* Main panel */}
         <div style={{ flex: 1, padding: "16px 18px", overflowY: "auto" }}>
 
-          {activeTab === "import" && <OmImportTab onLoad={loadFromOm} queue={omQueue} setQueue={setOmQueue}/>}
+          {activeTab === "import" && <OmImportTab onLoad={loadFromOm} queue={omQueue} setQueue={setOmQueue} openDealInNewTab={openDealInNewTab}/>}
+
+          {activeTab === "compare" && <CompareTab dealIndex={dealIndex} switchToDeal={switchToDeal}
+            openDealInNewTab={openDealInNewTab} removeFromCompare={removeFromCompare} />}
 
           {activeTab === "deal" && <>
             <div style={{ fontSize: 12, color: C.gold, fontWeight: 700, marginBottom: 10 }}>

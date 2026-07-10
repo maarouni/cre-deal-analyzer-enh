@@ -1,12 +1,9 @@
-import { useState } from "react";
+import { useState, useRef, useCallback } from "react";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf";
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
 
 // ─── Access Control ───────────────────────────────────────────────────────────
-const APP_PASSWORD = "InvestAgent_Full1!";
-const USER_PINS = {
-  masoud: "1234",
-  andy:   "7788",
-  colin:  "8877",
-};
+import { APP_PASSWORD, USER_PINS } from "./secrets";
 
 const C = {
   navy:    "#0F1F3D",
@@ -406,26 +403,418 @@ function MultiLineChart({ cashFlows, rents, rois, timeHorizon }) {
   );
 }
 
+// ─── Document Type Definitions ────────────────────────────────────────────────
+const DOC_TYPES = {
+  OM:      { label: "Offering Memo",   icon: "📋", color: "#C9A84C" },
+  T12:     { label: "T-12 Financials", icon: "📊", color: "#4A9EF5" },
+  UNKNOWN: { label: "Unknown",         icon: "📄", color: "#8A9BB5" },
+};
+
+function detectDocType(text) {
+  const t = text.toLowerCase();
+  const omScore  = (t.includes("offering memorandum")||t.includes("offering memo")?4:0)
+                 + (t.includes("net operating income")||t.includes("noi")?2:0)
+                 + (t.includes("cap rate")?2:0)+(t.includes("investment highlights")?2:0)
+                 + (t.includes("pro forma")?1:0);
+  const t12Score = (t.includes("trailing 12")||t.includes("t-12")||t.includes("t12")?4:0)
+                 + (t.includes("gross revenue")?1:0)+(t.includes("total expenses")?1:0)
+                 + ((t.match(/jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec/g)||[]).length>=6?2:0);
+  if (t12Score >= 2 && t12Score >= omScore) return "T12";
+  if (omScore  >= 2) return "OM";
+  return "UNKNOWN";
+}
+
+async function extractPdfText(file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: arrayBuffer}).promise;
+  // Was capped at 20 pages — CBRE-style OMs put the entire Financials
+  // section (Executive Summary, Rent Roll, Cash Flow) in the back half of
+  // the document, well past page 20 on anything 30+ pages long. Read the
+  // whole document (up to a sane ceiling) instead.
+  const maxPages = Math.min(pdf.numPages, 75);
+  const pageTexts = [];
+  for (let p = 1; p <= maxPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent({normalizeWhitespace: true});
+    pageTexts.push(content.items.map(i => i.str).join(" "));
+  }
+  return pageTexts; // array, one entry per page — lets callers prioritize
+}
+
+// Pages whose text matches these are almost certainly where the real
+// numbers live (rent rolls, cash flow tables, executive summaries, T-12s).
+const FIN_KEYWORDS = /rent\s*roll|net operating income|\bnoi\b|operating expense|cash flow|executive summary|capitalization rate|cap rate|trailing[- ]?12|\bt-?12\b|debt (service|coverage)|dscr|gross (scheduled|potential) income|total expenses|expense recover/i;
+
+// Build the text actually sent to the extraction model. If the whole
+// document is small, just send it all. Otherwise, keep the first few
+// pages (address/price/property description) plus every page that looks
+// financial, so long documents don't silently drop their numbers.
+function buildExtractionText(pageTexts, maxChars = 45000) {
+  const full = pageTexts.join("\n");
+  if (full.length <= maxChars) return full;
+  const picked = pageTexts.filter((t, i) => i < 5 || FIN_KEYWORDS.test(t));
+  const text = picked.join("\n");
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
+}
+
+function normNum(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val === "number") return val;
+  const s = String(val).replace(/[$,%\s]/g, "");
+  if (s.toUpperCase().endsWith("M")) return parseFloat(s) * 1e6;
+  if (s.toUpperCase().endsWith("K")) return parseFloat(s) * 1e3;
+  if (s.includes("-")) {
+    const parts = s.split("-").map(Number).filter(n => !isNaN(n));
+    if (parts.length === 2) return Math.round((parts[0] + parts[1]) / 2);
+  }
+  const n = parseFloat(s.replace(/,/g, ""));
+  return isNaN(n) ? null : n;
+}
+
+async function extractWithClaudeCRE(pageTexts, docType) {
+  const isT12 = docType === "T12";
+  const text = buildExtractionText(pageTexts);
+  const prompt = `You are a commercial real estate underwriting analyst. Extract fields from this ${isT12 ? "Trailing-12-Month income statement" : "Offering Memorandum"}.
+
+RULES:
+- Return ONLY a valid JSON object. No markdown, no backticks, no explanation.
+- Use null for any field not found.
+- All money values as plain numbers (no $ or commas). Convert: "$4.85M"->4850000, "$280K"->280000.
+- If a value is a range, use the midpoint.
+- capRate as a number (e.g. 5.25 not "5.25%").
+- leaseType: normalize to exactly one of: "NNN", "Modified Gross", "Gross".
+- listPrice may appear as "Asking Price", "List Price", "Offering Price", "Sale Price", "Acquisition Price", "Purchase Price".
+- For T-12 documents: listPrice will be null.
+- inPlaceMonthlyRent: total monthly rent across all units/spaces.
+- annualGrossIncome: also called "Gross Scheduled Income", "GSI", "Effective Gross Income".
+- noi: also called "Net Operating Income", "NOI", "Annual NOI", "Net Income", "Annual Net Income".
+- annualOperatingExpenses: also called "Total Expenses", "Operating Expenses", "OpEx", "Total Ann Oper Exp".
+
+FIELDS: address, city, state, zip, assetClass, listPrice, buildingSqft, lotSizeAcres, yearBuilt, totalUnits, occupancyPct, inPlaceMonthlyRent, annualGrossIncome, annualOperatingExpenses, noi, capRate, leaseType, tenantName, leaseTerm
+
+DOCUMENT TEXT:
+${text}`;
+
+  try {
+    const resp = await fetch("https://autumn-shape-7ddf.maarouni.workers.dev", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001", max_tokens: 1200,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (!resp.ok) throw new Error("API error " + resp.status);
+    const data = await resp.json();
+    if (data?.error) throw new Error(data.error.message || "API error");
+    const raw = data?.content?.[0]?.text || "{}";
+    const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
+    const numFields = ["listPrice","buildingSqft","lotSizeAcres","yearBuilt","totalUnits",
+      "occupancyPct","inPlaceMonthlyRent","annualGrossIncome","annualOperatingExpenses","noi","capRate","leaseTerm"];
+    numFields.forEach(f => { if (parsed[f] != null) parsed[f] = normNum(parsed[f]); });
+    return parsed;
+  } catch(e) {
+    return { _parseError: true, _errorMsg: e.message };
+  }
+}
+
+// ─── OM · T-12 Import Tab (CRE) ───────────────────────────────────────────────
+function OmImportTab({ onLoad, queue, setQueue }) {
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef();
+
+  const processFile = useCallback(async (file, idx) => {
+    if (!file.name.endsWith(".pdf")) {
+      setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "error", error: "Not a PDF file." } : item));
+      return;
+    }
+    setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "detecting" } : item));
+    try {
+      const pageTexts = await extractPdfText(file);
+      const docType = detectDocType(pageTexts.join("\n"));
+      setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "parsing", docType } : item));
+      const extracted = await extractWithClaudeCRE(pageTexts, docType);
+      if (extracted._parseError) {
+        setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "error",
+          error: extracted._errorMsg || "AI extraction failed — try re-uploading." } : item));
+        return;
+      }
+      const result = { ...extracted, fileName: file.name, docType };
+      setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "done", result } : item));
+    } catch (e) {
+      setQueue(q => q.map((item, i) => i === idx ? { ...item, status: "error", error: e.message || "Parse failed." } : item));
+    }
+  }, []);
+
+  const addFiles = useCallback((files) => {
+    const MAX_MB = 20;
+    const existingNames = queue.map(q => q.file?.name || q.result?.fileName || "");
+    const pdfs = Array.from(files)
+      .filter(f => f.name.endsWith(".pdf"))
+      .filter(f => {
+        if (f.size > MAX_MB * 1024 * 1024) { alert(`"${f.name}" exceeds ${MAX_MB}MB and was skipped.`); return false; }
+        if (existingNames.includes(f.name)) { alert(`"${f.name}" is already in the queue.`); return false; }
+        return true;
+      })
+      .slice(0, 8 - queue.length);
+    if (!pdfs.length) return;
+    setQueue(prev => {
+      const startIdx = prev.length;
+      const newItems = pdfs.map(file => ({ file, status: "queued", docType: null, result: null, error: null }));
+      setTimeout(() => { pdfs.forEach((f, i) => processFile(f, startIdx + i)); }, 0);
+      return [...prev, ...newItems];
+    });
+  }, [queue.length, processFile]);
+
+  const removeItem = (idx) => setQueue(q => q.filter((_, i) => i !== idx));
+
+  const dt = (type) => DOC_TYPES[type] || DOC_TYPES.UNKNOWN;
+  const sl = (item) => {
+    if (item.status === "queued")    return { text: "Queued",       color: C.muted };
+    if (item.status === "detecting") return { text: "Reading…",     color: C.gold };
+    if (item.status === "parsing")   return { text: "Extracting…",  color: C.gold };
+    if (item.status === "done")      return { text: "Ready ✓",      color: C.green };
+    if (item.status === "error")     return { text: "Error",        color: C.red };
+    return { text: "—", color: C.muted };
+  };
+
+  return (
+    <div style={{ padding: "0 4px" }}>
+      {/* Drop zone */}
+      <div style={{ background: C.navyMid, borderRadius: 10, padding: "16px",
+        border: `1px solid ${C.border}`, marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: C.gold, fontWeight: 700, marginBottom: 4 }}>
+          📂 Upload CRE Documents
+        </div>
+        <div style={{ fontSize: 11, color: C.muted, marginBottom: 10 }}>
+          Drop up to <strong style={{ color: C.white }}>8 PDFs</strong> at once —
+          Offering Memorandums and T-12 financials are auto-classified and extracted.
+        </div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+          {Object.entries(DOC_TYPES).filter(([k]) => k !== "UNKNOWN").map(([k, v]) => (
+            <div key={k} style={{ display: "flex", alignItems: "center", gap: 4,
+              background: v.color + "18", border: `1px solid ${v.color}40`,
+              borderRadius: 6, padding: "3px 8px", fontSize: 10 }}>
+              <span>{v.icon}</span>
+              <span style={{ color: v.color, fontWeight: 600 }}>{v.label}</span>
+            </div>
+          ))}
+        </div>
+        <div
+          onClick={() => fileRef.current.click()}
+          onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={e => { e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files); }}
+          style={{ border: `2px dashed ${dragOver ? C.gold : C.border}`, borderRadius: 10,
+            padding: "28px 16px", textAlign: "center", cursor: "pointer",
+            background: dragOver ? C.navyLt + "80" : C.navyLt, transition: "all 0.2s" }}>
+          <div style={{ fontSize: 28, marginBottom: 8 }}>📂</div>
+          <div style={{ fontSize: 13, color: C.gold, fontWeight: 600 }}>Click to upload or drag & drop</div>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>OM · T-12 — PDF only · max 8 files</div>
+        </div>
+        <input ref={fileRef} type="file" accept=".pdf" multiple style={{ display: "none" }}
+          onChange={e => addFiles(e.target.files)} />
+      </div>
+
+      {/* Queue */}
+      {queue.length > 0 && (
+        <div style={{ background: C.navyMid, borderRadius: 10, padding: "16px",
+          border: `1px solid ${C.border}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between",
+            alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontSize: 12, color: C.gold, fontWeight: 700 }}>
+              📋 Documents ({queue.length}/8)
+            </div>
+            <button onClick={() => { if (window.confirm("Clear all documents from the queue?")) setQueue([]); }}
+              style={{ background: "transparent", border: `1px solid ${C.border}`,
+              color: C.muted, borderRadius: 5, padding: "2px 8px", fontSize: 10, cursor: "pointer" }}>
+              Clear all</button>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {queue.map((item, idx) => {
+              const type = dt(item.docType); const s = sl(item);
+              return (
+                <div key={idx} style={{ background: C.navyLt, borderRadius: 8,
+                  padding: "12px", border: `1px solid ${C.border}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between",
+                    alignItems: "center", marginBottom: item.result ? 8 : 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+                      <span style={{ fontSize: 16 }}>{type.icon}</span>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 11, color: C.white, fontWeight: 600,
+                          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {item.file?.name || item.result?.fileName || "Restored document"}
+                        </div>
+                        <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
+                          {item.docType && (
+                            <span style={{ fontSize: 9, color: type.color, fontWeight: 700,
+                              background: type.color + "18", borderRadius: 4, padding: "1px 5px" }}>
+                              {type.label}
+                            </span>
+                          )}
+                          <span style={{ fontSize: 9, color: s.color, fontWeight: 600 }}>{s.text}</span>
+                        </div>
+                      </div>
+                    </div>
+                    <button onClick={() => removeItem(idx)} style={{ background: "transparent",
+                      border: "none", color: C.muted, cursor: "pointer",
+                      fontSize: 14, padding: "0 4px", flexShrink: 0 }}>✕</button>
+                  </div>
+
+                  {(item.status === "detecting" || item.status === "parsing") && (
+                    <div style={{ fontSize: 11, color: C.gold, marginTop: 4 }}>
+                      {item.status === "detecting" ? "⏳ Detecting document type…" : "⏳ Extracting CRE financials via AI…"}
+                    </div>
+                  )}
+                  {item.status === "error" && (
+                    <div style={{ fontSize: 11, color: C.red, marginTop: 4 }}>⚠️ {item.error}</div>
+                  )}
+
+                  {item.status === "done" && item.result && (() => {
+                    const r = item.result;
+                    const addr = [r.address, r.city, r.state].filter(Boolean).join(", ");
+                    const pills = [
+                      ["Price",  r.listPrice             ? "$" + Number(r.listPrice).toLocaleString() : null],
+                      ["NOI",    r.noi                   ? "$" + Number(r.noi).toLocaleString() + "/yr" : null],
+                      ["Cap",    r.capRate               ? Number(r.capRate).toFixed(2) + "%" : null],
+                      ["SF",     r.buildingSqft          ? Number(r.buildingSqft).toLocaleString() + " sf" : null],
+                      ["Occ",    r.occupancyPct          ? r.occupancyPct + "%" : null],
+                      ["Lease",  r.leaseType             || null],
+                    ].filter(([, v]) => v != null);
+                    const hasData = pills.length > 0 || !!addr;
+                    const isNNN = (r.leaseType || "").toString().toUpperCase().includes("NNN");
+                    const missingRent = !r.inPlaceMonthlyRent && !r.annualGrossIncome;
+                    const missingOpex = !r.annualOperatingExpenses && !isNNN; // NNN: tenant covers OpEx directly — nothing to find, not an error
+                    return (
+                      <>
+                        {!hasData && (
+                          <div style={{ fontSize: 11, color: "#E8A020", marginBottom: 8,
+                            background: "#7B4A0022", border: "1px solid #C9A84C40",
+                            borderRadius: 6, padding: "6px 10px" }}>
+                            ⚠️ No financial data extracted. This may be image-based, scanned, or non-CRE. Manual entry required.
+                          </div>
+                        )}
+                        {hasData && (missingRent || missingOpex) && (
+                          <div style={{ fontSize: 11, color: "#E8A020", marginBottom: 8,
+                            background: "#7B4A0022", border: "1px solid #C9A84C40",
+                            borderRadius: 6, padding: "6px 10px" }}>
+                            ⚠️ {missingRent && missingOpex ? "Rent and OpEx were" : missingRent ? "Rent was" : "OpEx was"} not found in this document — enter {missingRent && missingOpex ? "them" : "it"} manually after loading.
+                          </div>
+                        )}
+                        {addr && (
+                          <div style={{ fontSize: 11, color: C.gold, fontWeight: 600,
+                            marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            📍 {addr}
+                          </div>
+                        )}
+                        {pills.length > 0 && (
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
+                            {pills.map(([k, v]) => (
+                              <div key={k} style={{ background: C.navy, borderRadius: 5, padding: "3px 7px", fontSize: 10 }}>
+                                <span style={{ color: C.muted }}>{k}: </span>
+                                <span style={{ color: C.white, fontWeight: 700 }}>{v}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <button onClick={() => onLoad(r)}
+                          style={{ width: "100%", padding: "9px",
+                            background: hasData ? C.gold : C.muted,
+                            border: "none", color: C.navy, borderRadius: 7,
+                            cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+                          {hasData ? "⚡ Load into Analyzer →" : "⚡ Load anyway (manual entry required)"}
+                        </button>
+                      </>
+                    );
+                  })()}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 10, textAlign: "center" }}>
+            AI extraction reads asking price, NOI, cap rate, SF, occupancy, and lease terms (~3 sec/file)
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Widget ──────────────────────────────────────────────────────────────
 function Widget({ userName }) {
-  const [purchasePrice,    setPurchasePrice]    = useState(300000);
-  const [monthlyRent,      setMonthlyRent]      = useState(2000);
-  const [downPct,          setDownPct]          = useState(20);
-  const [mortgageRate,     setMortgageRate]     = useState(6.5);
-  const [mortgageTerm,     setMortgageTerm]     = useState(30);
-  const [monthlyExpenses,  setMonthlyExpenses]  = useState(300);
-  const [economicVacancy,  setEconomicVacancy]  = useState(5);
-  const [appreciationRate, setAppreciationRate] = useState(3);
-  const [rentGrowthRate,   setRentGrowthRate]   = useState(3);
-  const [timeHorizon,      setTimeHorizon]      = useState(10);
-  const [brokerFeePct,     setBrokerFeePct]     = useState(2.5);
-  const [leaseType,        setLeaseType]        = useState("Gross");
-  const [rentBumpPct,      setRentBumpPct]      = useState(10);
-  const [rentBumpYears,    setRentBumpYears]    = useState(5);
-  const [tenantCredit,     setTenantCredit]     = useState("Non-Rated");
-  const [emailAddr,        setEmailAddr]        = useState("");
-  const [emailSent,        setEmailSent]        = useState(false);
-  const [activeTab,        setActiveTab]        = useState("deal");
+  const ls = (key, def) => { try { const v = localStorage.getItem("cre_" + key); return v !== null ? JSON.parse(v) : def; } catch { return def; } };
+  const save = (key, val) => { try { localStorage.setItem("cre_" + key, JSON.stringify(val)); } catch {} };
+  const usePersist = (key, def) => {
+    const [val, setVal] = useState(() => ls(key, def));
+    const set = (v) => { const next = typeof v === "function" ? v(val) : v; save(key, next); setVal(next); };
+    return [val, set];
+  };
+  const [purchasePrice,    setPurchasePrice]    = usePersist("purchasePrice", 300000);
+  const [monthlyRent,      setMonthlyRent]      = usePersist("monthlyRent", 2000);
+  const [downPct,          setDownPct]          = usePersist("downPct", 20);
+  const [mortgageRate,     setMortgageRate]     = usePersist("mortgageRate", 6.5);
+  const [mortgageTerm,     setMortgageTerm]     = usePersist("mortgageTerm", 30);
+  const [monthlyExpenses,  setMonthlyExpenses]  = usePersist("monthlyExpenses", 300);
+  const [economicVacancy,  setEconomicVacancy]  = usePersist("economicVacancy", 5);
+  const [appreciationRate, setAppreciationRate] = usePersist("appreciationRate", 3);
+  const [rentGrowthRate,   setRentGrowthRate]   = usePersist("rentGrowthRate", 3);
+  const [timeHorizon,      setTimeHorizon]      = usePersist("timeHorizon", 10);
+  const [brokerFeePct,     setBrokerFeePct]     = usePersist("brokerFeePct", 2.5);
+  const [leaseType,        setLeaseType]        = usePersist("leaseType", "Gross");
+  const [rentBumpPct,      setRentBumpPct]      = usePersist("rentBumpPct", 10);
+  const [rentBumpYears,    setRentBumpYears]    = usePersist("rentBumpYears", 5);
+  const [tenantCredit,     setTenantCredit]     = usePersist("tenantCredit", "Non-Rated");
+  const [propAddress,      setPropAddress]      = usePersist("propAddress", "");
+  const [propZip,          setPropZip]          = usePersist("propZip", "");
+  const [activeTab,        setActiveTab]        = usePersist("activeTab", "import");
+  const [omQueue, setOmQueueRaw] = useState(() => {
+    try { const q = JSON.parse(localStorage.getItem("cre_omQueue") || "[]");
+      return q.map(item => ({...item, file: null, status: item.status === "done" ? "done" : "queued"}));
+    } catch { return []; }
+  });
+  const setOmQueue = (updater) => {
+    setOmQueueRaw(prev => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      try { localStorage.setItem("cre_omQueue", JSON.stringify(next.map(({file, ...rest}) => rest))); } catch {}
+      return next;
+    });
+  };
+  const [needsPrice,    setNeedsPrice]    = usePersist("needsPrice", false);
+  const [needsRent,     setNeedsRent]     = usePersist("needsRent", false);
+  const [needsExpenses, setNeedsExpenses] = usePersist("needsExpenses", false);
+  const [emailAddr,  setEmailAddr]  = useState("");
+  const [emailSent,  setEmailSent]  = useState(false);
+
+  // Pre-fill analyzer from OM/T-12 extraction
+  const loadFromOm = (r) => {
+    if (r.address || r.city)       setPropAddress([r.address, r.city, r.state].filter(Boolean).join(", "));
+    if (r.zip)                     setPropZip(String(r.zip));
+    if (r.listPrice) { setPurchasePrice(Number(r.listPrice)); setNeedsPrice(false); }
+    else if (r.docType === "T12") { setPurchasePrice(0); setNeedsPrice(true); }
+
+    // Rent and OpEx: only overwrite the field when the extraction actually
+    // found something. If it didn't, DON'T silently leave whatever number
+    // happened to be sitting in state (e.g. the $2,000/$300 defaults) —
+    // flag it so the sidebar warns the user the field needs manual entry.
+    if (r.inPlaceMonthlyRent)      { setMonthlyRent(Number(r.inPlaceMonthlyRent)); setNeedsRent(false); }
+    else if (r.annualGrossIncome)  { setMonthlyRent(Math.round(Number(r.annualGrossIncome) / 12)); setNeedsRent(false); }
+    else                            setNeedsRent(true);
+
+    const ltRaw = (r.leaseType || "").toString().toUpperCase();
+    const isNNN = ltRaw.includes("NNN") || ltRaw.includes("TRIPLE");
+
+    if (r.annualOperatingExpenses) { setMonthlyExpenses(Math.round(Number(r.annualOperatingExpenses) / 12)); setNeedsExpenses(false); }
+    else if (isNNN)                setNeedsExpenses(false); // NNN: tenant pays OpEx directly — there's nothing to find, so it's not an error
+    else                            setNeedsExpenses(true);
+
+    if (r.leaseType) {
+      if (isNNN) setLeaseType("NNN");
+      else if (ltRaw.includes("MODIFIED")) setLeaseType("Modified Gross");
+      else setLeaseType("Gross");
+    }
+    setActiveTab("deal");
+  };
 
   const m = calcMetrics({
     purchasePrice, monthlyRent, downPct, mortgageRate, mortgageTerm,
@@ -480,6 +869,7 @@ function Widget({ userName }) {
       {/* Tab bar */}
       <div style={{ background: C.navyMid, borderBottom: `1px solid ${C.border}`,
         display: "flex", flexShrink: 0 }}>
+        {tab("import",  "📂 OM · T-12")}
         {tab("deal",     "Deal Analyzer")}
         {tab("insights", "Insights")}
         {tab("report",   "Agent Report")}
@@ -488,8 +878,8 @@ function Widget({ userName }) {
       {/* Body */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
 
-        {/* Sidebar */}
-        <div style={{ width: 200, background: C.navyMid,
+        {/* Sidebar — hidden on import tab */}
+        {activeTab !== "import" && <div style={{ width: 200, background: C.navyMid,
           borderRight: `1px solid ${C.border}`,
           padding: "14px 12px", overflowY: "auto", flexShrink: 0, fontSize: 12 }}>
 
@@ -498,27 +888,52 @@ function Widget({ userName }) {
             🚀 Property Information
           </div>
 
+          <button onClick={() => {
+            try { Object.keys(localStorage).filter(k=>k.startsWith("cre_")).forEach(k=>localStorage.removeItem(k)); } catch {}
+            window.location.reload();
+          }} style={{width:"100%",padding:"5px",marginBottom:10,background:"transparent",
+            border:`1px solid ${C.border}`,color:C.muted,borderRadius:5,
+            fontSize:10,cursor:"pointer"}}>↺ Clear Deal &amp; Reset</button>
+
           <Label>Property Address (optional)</Label>
-          <input placeholder="123 Main St" style={{ width: "100%", boxSizing: "border-box",
+          <input placeholder="123 Main St" value={propAddress} onChange={e=>setPropAddress(e.target.value)} style={{ width: "100%", boxSizing: "border-box",
             background: C.navyLt, border: `1px solid ${C.border}`, borderRadius: 5,
             padding: "5px 8px", color: C.white, fontSize: 12, marginBottom: 10 }} />
 
           <Label>ZIP Code (optional)</Label>
-          <input placeholder="94526" style={{ width: "100%", boxSizing: "border-box",
+          <input placeholder="94526" value={propZip} onChange={e=>setPropZip(e.target.value)} style={{ width: "100%", boxSizing: "border-box",
             background: C.navyLt, border: `1px solid ${C.border}`, borderRadius: 5,
             padding: "5px 8px", color: C.white, fontSize: 12, marginBottom: 12 }} />
 
+          {needsPrice && (
+            <div style={{background:"#7B4A0022",border:"1px solid #C9A84C",borderRadius:6,
+              padding:"7px 10px",marginBottom:8,fontSize:11,color:"#C9A84C"}}>
+              ⚠️ T-12 documents don&apos;t include asking price — enter it manually below.
+            </div>
+          )}
           <PlusMinusInput label="Acquisition Price ($)" value={purchasePrice}
             min={50000} max={50000000} step={10000}
-            display={v => "$" + v.toLocaleString()} onChange={setPurchasePrice} />
+            display={v => "$" + v.toLocaleString()} onChange={v=>{setPurchasePrice(v);setNeedsPrice(false);}} />
 
+          {needsRent && (
+            <div style={{background:"#7B4A0022",border:"1px solid #C9A84C",borderRadius:6,
+              padding:"7px 10px",marginBottom:8,fontSize:11,color:"#C9A84C"}}>
+              ⚠️ Rent wasn&apos;t found in this document — the value below is a placeholder, not real data. Enter it manually.
+            </div>
+          )}
           <PlusMinusInput label="In-Place Rent ($/mo)" value={monthlyRent}
             min={200} max={500000} step={100}
-            display={v => "$" + v.toLocaleString()} onChange={setMonthlyRent} />
+            display={v => "$" + v.toLocaleString()} onChange={v=>{setMonthlyRent(v);setNeedsRent(false);}} />
 
+          {needsExpenses && (
+            <div style={{background:"#7B4A0022",border:"1px solid #C9A84C",borderRadius:6,
+              padding:"7px 10px",marginBottom:8,fontSize:11,color:"#C9A84C"}}>
+              ⚠️ Operating expenses weren&apos;t found in this document — the value below is a placeholder, not real data. Enter it manually.
+            </div>
+          )}
           <PlusMinusInput label="Operating Expenses (OpEx) ($/mo)" value={monthlyExpenses}
             min={0} max={200000} step={50}
-            display={v => "$" + v.toLocaleString()} onChange={setMonthlyExpenses}
+            display={v => "$" + v.toLocaleString()} onChange={v=>{setMonthlyExpenses(v);setNeedsExpenses(false);}}
             note="Includes property tax, insurance, and miscellaneous costs" />
 
           <SelectInput label="Lease Type" value={leaseType}
@@ -568,10 +983,12 @@ function Widget({ userName }) {
               ✓ NNN: Tenant covers all OpEx. Expenses set to $0.
             </div>
           )}
-        </div>
+        </div>}
 
         {/* Main panel */}
         <div style={{ flex: 1, padding: "16px 18px", overflowY: "auto" }}>
+
+          {activeTab === "import" && <OmImportTab onLoad={loadFromOm} queue={omQueue} setQueue={setOmQueue}/>}
 
           {activeTab === "deal" && <>
             <div style={{ fontSize: 12, color: C.gold, fontWeight: 700, marginBottom: 10 }}>
@@ -672,6 +1089,7 @@ function Widget({ userName }) {
                   const lines = [
                     "CRE Deal Analyzer — RealEstate-Analytics.ai",
                     "Generated: " + new Date().toLocaleDateString(),
+                    propAddress ? "Property: " + propAddress + (propZip ? " " + propZip : "") : "",
                     "---",
                     "PROPERTY INPUTS",
                     "Acquisition Price: $" + purchasePrice.toLocaleString(),
@@ -708,7 +1126,7 @@ function Widget({ userName }) {
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement("a");
                   a.href = url;
-                  a.download = "CRE_Deal_Analysis_" + new Date().toISOString().slice(0,10) + ".txt";
+                  a.download = "CRE_Deal_Analysis_" + (propAddress ? propAddress.replace(/[^a-zA-Z0-9]/g,"_").slice(0,30) + "_" : "") + new Date().toISOString().slice(0,10) + ".txt";
                   a.click();
                   URL.revokeObjectURL(url);
                 }}
