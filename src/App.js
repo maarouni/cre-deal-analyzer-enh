@@ -3,7 +3,14 @@ import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf";
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
 
 // ─── Access Control ───────────────────────────────────────────────────────────
-import { APP_PASSWORD, USER_PINS } from "./secrets";
+import { APP_PASSWORD_HASH, PIN_HASH_TO_NAME } from "./secrets";
+
+// SHA-256 hex digest of a string, via the browser's native Web Crypto API
+// (available on any modern browser over https/localhost — no library needed).
+async function sha256Hex(text) {
+  const buf = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
 
 const C = {
   navy:    "#0F1F3D",
@@ -108,25 +115,27 @@ function calcMetrics({ purchasePrice, monthlyRent, downPct, mortgageRate,
 }
 
 // ─── Gate Screen ──────────────────────────────────────────────────────────────
-// PIN-to-name mapping (PIN is the only thing user types in step 2)
-const PIN_TO_NAME = Object.fromEntries(
-  Object.entries(USER_PINS).map(([name, pin]) => [pin, name])
-);
-
 function GateScreen({ onAuth }) {
   const [step,   setStep]   = useState("password");
   const [pwd,    setPwd]    = useState("");
   const [pin,    setPin]    = useState("");
   const [pwdErr, setPwdErr] = useState("");
   const [pinErr, setPinErr] = useState("");
+  const [busy,   setBusy]   = useState(false);
 
-  function submitPassword() {
-    if (pwd === APP_PASSWORD) { setStep("pin"); setPwdErr(""); }
+  async function submitPassword() {
+    setBusy(true);
+    const hash = await sha256Hex(pwd);
+    setBusy(false);
+    if (hash === APP_PASSWORD_HASH) { setStep("pin"); setPwdErr(""); }
     else setPwdErr("❌ Incorrect password. Please try again.");
   }
 
-  function submitPin() {
-    const name = PIN_TO_NAME[pin.trim()];
+  async function submitPin() {
+    setBusy(true);
+    const hash = await sha256Hex(pin.trim());
+    setBusy(false);
+    const name = PIN_HASH_TO_NAME[hash];
     if (name) { onAuth(name); }
     else setPinErr("❌ Incorrect PIN. Please try again.");
   }
@@ -719,7 +728,12 @@ function OmImportTab({ onLoad, queue, setQueue, openDealInNewTab }) {
                           </div>
                         )}
                         <div style={{ display: "flex", gap: 6 }}>
-                          <button onClick={() => onLoad(r, idx)}
+                          <button onClick={() => {
+                            if (item.dealId && !window.confirm(
+                              "This document is already loaded. Reloading it will refresh its price, rent, OpEx, address, and lease type from the document again. Financing assumptions (equity %, rate, hold period, etc.) will be kept as-is. Continue?"
+                            )) return;
+                            onLoad(r, idx);
+                          }}
                             style={{ flex: 1, padding: "9px",
                               background: hasData ? C.gold : C.muted,
                               border: "none", color: C.navy, borderRadius: 7,
