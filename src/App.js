@@ -4,6 +4,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs
 
 // ─── Access Control ───────────────────────────────────────────────────────────
 import { APP_PASSWORD_HASH, PIN_HASH_TO_NAME } from "./secrets";
+import MarketCompsPanel from "./MarketCompsPanel";
 
 // SHA-256 hex digest of a string, via the browser's native Web Crypto API
 // (available on any modern browser over https/localhost — no library needed).
@@ -1075,9 +1076,6 @@ function DealWorkspace({ dealId, userName, activeTab, setActiveTab, omQueue, set
     timeHorizon, brokerFeePct, leaseType, rentBumpPct, rentBumpYears, tenantCredit,
   });
 
-  const grade  = m.coc >= 15 ? "A" : m.coc >= 12 ? "B" : m.coc >= 9 ? "C" : m.coc >= 6 ? "D" : "F";
-  const gCol   = { A: C.green, B: "#6FCF97", C: C.gold, D: C.orange, F: C.red }[grade];
-
   const tab = (id, label) => (
     <button onClick={() => setActiveTab(id)} style={{
       padding: "8px 0", border: "none", cursor: "pointer", fontSize: 12, flex: 1,
@@ -1110,11 +1108,6 @@ function DealWorkspace({ dealId, userName, activeTab, setActiveTab, omQueue, set
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <div style={{ fontSize: 11, color: C.muted }}>
             👤 {userName.charAt(0).toUpperCase() + userName.slice(1)}
-          </div>
-          <div style={{ textAlign: "center", background: gCol + "22",
-            border: `2px solid ${gCol}`, borderRadius: 10, padding: "6px 18px" }}>
-            <div style={{ fontSize: 9, color: gCol, letterSpacing: 2 }}>GRADE</div>
-            <div style={{ fontSize: 28, fontWeight: 900, color: gCol, lineHeight: 1 }}>{grade}</div>
           </div>
         </div>
       </div>
@@ -1272,6 +1265,8 @@ function DealWorkspace({ dealId, userName, activeTab, setActiveTab, omQueue, set
               <Pill label="Monthly Mortgage" value={"$" + Math.round(m.mortgage).toLocaleString()}
                 color={C.white} />
             </div>
+
+            <MarketCompsPanel zip={propZip} capRate={m.capRate} />
 
             <div style={{ background: C.navyMid, borderRadius: 10, padding: "12px 14px",
               border: `1px solid ${C.border}`, marginBottom: 12 }}>
