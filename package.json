@@ -2,7 +2,7 @@
   "name": "cre-deal-analyzer-enh",
   "version": "1.0.0",
   "private": true,
-  "homepage": "https://maarouni.github.io/cre-deal-analyzer-enh",
+  "homepage": "https://cre.realestate-analytics.ai",
   "dependencies": {
     "pdfjs-dist": "^3.11.174",
     "react": "^18.2.0",
