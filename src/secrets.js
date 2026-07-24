@@ -18,6 +18,7 @@ export const PIN_HASH_TO_NAME = {
   "be41b7f1fa56ba2b0582910053c86cf6ee7e311efc51300220df0918bb9a287b": "ali",
   "8c059aad9e8b1f5304366e7cfdbfa778bfc4d5a748ff9559b8752dd286ee9076": "mark",
   "15fc36b3e80b9d7f87f7dc90cd7a2845c5d8501c30f03379fcf14154f1680380": "Mark Furuta",
+  "8f33eff9c330b9e8348f8c96ab45d0de6f6c5311089a29bf8bf338d91a17a6f9": "bill",
 };
 
 // To add/change a PIN or the password, generate its SHA-256 hex hash and
