@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>CRE Deal Analyzer — Interactive Bilingual Demo</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0F1F3D; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: #F5F7FA; }
+  #root { padding-bottom: 60px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useMemo } = React;
+const C = { navy:"#0F1F3D", navyMid:"#1B2A4A", gold:"#C9A84C", white:"#F5F7FA", muted:"#8A9BB5", green:"#2ECC8A", red:"#E05C5C", border:"rgba(201,168,76,0.25)" };
+
+function Field({ enLbl, zhLbl, children, note, noteZh }) {
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ fontSize: 12, color: C.white }}>{enLbl}</div>
+      <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>{zhLbl}</div>
+      {children}
+      {note && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 4 }}>{note}</div>}
+      {noteZh && <div style={{ fontSize: 10, color: "#6f7f9c" }}>{noteZh}</div>}
+    </div>
+  );
+}
+
+const inputStyle = { width: "100%", background: C.navyMid, border: `1px solid ${C.border}`, borderRadius: 6,
+  padding: "8px 10px", fontSize: 13, color: C.white };
+
+function MetricCard({ en, zh, val, color, live }) {
+  return (
+    <div style={{ background: C.navyMid, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 12px", textAlign: "center" }}>
+      <div style={{ fontSize: 10, color: C.muted, letterSpacing: 0.5 }}>{en} {live && <span style={{color:C.green}}>●</span>}</div>
+      <div style={{ fontSize: 10, color: "#6f7f9c", marginBottom: 8 }}>{zh}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color: color || C.white }}>{val}</div>
+    </div>
+  );
+}
+
+function Demo() {
+  const [address, setAddress] = useState("6529 Riverside Ave, Riverside");
+  const [zip, setZip] = useState("94526");
+  const [price, setPrice] = useState(4000000);
+  const [rent, setRent] = useState(32664);
+  const [opex, setOpex] = useState(21530);
+  const [equityPct, setEquityPct] = useState(20);
+  const [rate, setRate] = useState(6.5);
+  const [leaseType, setLeaseType] = useState("Modified Gross");
+  const [tenantCredit, setTenantCredit] = useState("Non-Rated");
+
+  const calc = useMemo(() => {
+    const termYears = 25;
+    const loanAmt = price * (1 - equityPct / 100);
+    const monthlyRate = rate / 100 / 12;
+    const n = termYears * 12;
+    const monthlyPayment = monthlyRate === 0 ? loanAmt / n
+      : loanAmt * monthlyRate / (1 - Math.pow(1 + monthlyRate, -n));
+    const noiMonthly = rent - opex;
+    const noiAnnual = noiMonthly * 12;
+    const capRate = price ? (noiAnnual / price) * 100 : 0;
+    const dscr = monthlyPayment ? noiMonthly / monthlyPayment : 0;
+    const cashFlowMonthly = noiMonthly - monthlyPayment;
+    const equityDollars = price * (equityPct / 100);
+    const cashOnCash = equityDollars ? ((cashFlowMonthly * 12) / equityDollars) * 100 : 0;
+    return { monthlyPayment, capRate, dscr, cashFlowMonthly, cashOnCash };
+  }, [price, rent, opex, equityPct, rate]);
+
+  const fmt$ = n => "$" + Math.round(n).toLocaleString();
+  const dscrColor = calc.dscr >= 1.25 ? C.green : calc.dscr >= 1.0 ? C.gold : C.red;
+
+  return (
+    <div>
+      <div style={{ padding: "18px 24px", borderBottom: `2px solid ${C.gold}` }}>
+        <div style={{ color: C.gold, fontSize: 11, letterSpacing: 2, fontWeight: 700 }}>REALESTATE-ANALYTICS.AI</div>
+        <div style={{ fontSize: 22, fontWeight: 700 }}>🏢 CRE Deal Analyzer</div>
+        <div style={{ fontSize: 15, color: C.gold, marginBottom: 4 }}>🏢 商业地产(CRE)交易分析器</div>
+        <div style={{ fontSize: 13, color: C.muted }}>Model rents, expenses, leverage, and returns over your hold period.</div>
+        <div style={{ fontSize: 12, color: "#6f7f9c" }}>对持有期内的租金、支出、杠杆和回报进行建模。</div>
+      </div>
+
+      <div style={{ margin: "16px 24px 0", background: "#7B4A0022", border: `1px solid ${C.gold}`,
+        borderRadius: 6, padding: "8px 14px", fontSize: 11.5, color: C.gold }}>
+        ⚠️ Live prototype — Cap Rate, DSCR, Cash-on-Cash, and Monthly Mortgage recalculate as you edit (●).
+        IRR / Equity Multiple below are static examples, not yet wired to multi-year logic in this demo.
+        Label translations unreviewed by a native speaker. / 实时原型 —
+        资本化率、偿债覆盖率、现金回报率及每月按揭还款会随输入实时更新(●标记)。下方内部收益率/权益倍数为静态示例,本演示暂未接入多年计算逻辑。文字翻译尚未经母语人士审核。
+      </div>
+
+      <div style={{ display: "flex", gap: 18, padding: "18px 24px 60px" }}>
+        <div style={{ width: 300, flexShrink: 0 }}>
+          <div style={{ color: C.gold, fontWeight: 700, fontSize: 12, marginBottom: 2 }}>🚀 Property Information</div>
+          <div style={{ color: C.muted, fontSize: 11, marginBottom: 12 }}>房产信息</div>
+
+          <Field enLbl="Property Address (optional)" zhLbl="房产地址(可选)">
+            <input style={inputStyle} value={address} onChange={e => setAddress(e.target.value)} />
+          </Field>
+          <Field enLbl="ZIP Code (optional)" zhLbl="邮编(可选)">
+            <input style={inputStyle} value={zip} onChange={e => setZip(e.target.value)} />
+          </Field>
+          <Field enLbl="Acquisition Price ($)" zhLbl="购买价格($)">
+            <input style={inputStyle} type="number" value={price} onChange={e => setPrice(Number(e.target.value) || 0)} />
+          </Field>
+          <Field enLbl="In-Place Rent ($/mo)" zhLbl="现有租金($/月)">
+            <input style={inputStyle} type="number" value={rent} onChange={e => setRent(Number(e.target.value) || 0)} />
+          </Field>
+          <Field enLbl="Operating Expenses (OpEx) ($/mo)" zhLbl="运营支出(OpEx)($/月)"
+            note="Includes property tax, insurance, and misc costs" noteZh="包含房产税、保险及其他杂项费用">
+            <input style={inputStyle} type="number" value={opex} onChange={e => setOpex(Number(e.target.value) || 0)} />
+          </Field>
+          <Field enLbl="Lease Type" zhLbl="租赁类型">
+            <select style={inputStyle} value={leaseType} onChange={e => setLeaseType(e.target.value)}>
+              <option>Gross</option><option>Modified Gross</option><option>NNN</option>
+            </select>
+          </Field>
+          <Field enLbl="Tenant Credit" zhLbl="租户信用等级">
+            <select style={inputStyle} value={tenantCredit} onChange={e => setTenantCredit(e.target.value)}>
+              <option>Investment Grade</option><option>Non-Rated</option><option>Franchisee</option>
+            </select>
+          </Field>
+
+          <div style={{ color: C.gold, fontWeight: 700, fontSize: 12, marginTop: 20, marginBottom: 2,
+            borderTop: `1px solid ${C.border}`, paddingTop: 16 }}>💰 Financing &amp; Growth</div>
+          <div style={{ color: C.muted, fontSize: 11, marginBottom: 12 }}>融资与增长</div>
+
+          <div style={{ fontSize: 12, marginBottom: 2 }}>Equity Contribution (%) <span style={{color:C.gold, float:"right"}}>{equityPct}%</span></div>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>自有资金比例(%)</div>
+          <input type="range" min="5" max="60" value={equityPct} onChange={e => setEquityPct(Number(e.target.value))} style={{ width: "100%", marginBottom: 14 }} />
+
+          <div style={{ fontSize: 12, marginBottom: 2 }}>Loan Interest Rate (%) <span style={{color:C.gold, float:"right"}}>{rate.toFixed(3)}%</span></div>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>贷款利率(%)</div>
+          <input type="range" min="3" max="12" step="0.125" value={rate} onChange={e => setRate(Number(e.target.value))} style={{ width: "100%" }} />
+        </div>
+
+        <div style={{ flex: 1 }}>
+          <div style={{ color: C.gold, fontWeight: 700, fontSize: 13 }}>📈 Long-Term Metrics</div>
+          <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 10 }}>长期指标</div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <MetricCard en="IRR (OPERATIONAL) (%)" zh="内部收益率(运营)" val="-1.64" color={C.red} />
+            <MetricCard en="IRR (TOTAL INCL. SALE) (%)" zh="内部收益率(含出售)" val="23.48" color={C.green} />
+            <MetricCard en="EQUITY MULTIPLE" zh="权益倍数" val="7.48×" color={C.gold} />
+            <MetricCard en="DSCR (YEAR 1)" zh="偿债覆盖率(第一年)" val={calc.dscr.toFixed(2)} color={dscrColor} live />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12, marginBottom: 18 }}>
+            <MetricCard en="CAP RATE (%)" zh="资本化率" val={calc.capRate.toFixed(2)} color={C.green} live />
+            <MetricCard en="CASH-ON-CASH (%)" zh="现金回报率" val={calc.cashOnCash.toFixed(2)} color={C.gold} live />
+            <MetricCard en="MO. CASH FLOW" zh="每月现金流" val={fmt$(calc.cashFlowMonthly)} color={calc.cashFlowMonthly >= 0 ? C.green : C.red} live />
+            <MetricCard en="MONTHLY MORTGAGE" zh="每月按揭还款" val={fmt$(calc.monthlyPayment)} color={C.white} live />
+          </div>
+
+          <div style={{ background: C.navyMid, border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px 18px" }}>
+            <div style={{ color: C.gold, fontWeight: 700, fontSize: 13 }}>DSCR (Debt Service Coverage)</div>
+            <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 8 }}>偿债覆盖率(DSCR)</div>
+            <div style={{ background: C.navy, borderRadius: 6, height: 10, overflow: "hidden" }}>
+              <div style={{ background: dscrColor, height: "100%", width: Math.min(100, calc.dscr * 60) + "%" }} />
+            </div>
+            <div style={{ textAlign: "right", fontSize: 11, color: dscrColor, marginTop: 6 }}>
+              {calc.dscr.toFixed(2)}× {calc.dscr < 1 ? "⚠ Below 1.0 / 低于1.0" : calc.dscr < 1.25 ? "Borderline / 临界值" : "Healthy / 健康"}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Demo />);
+</script>
+</body>
+</html>
