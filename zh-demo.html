@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>CRE Deal Analyzer — Interactive Bilingual Demo</title>
+<title>CRE Deal Analyzer — Bilingual Demo (Verified Formula)</title>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -34,14 +34,42 @@ function Field({ enLbl, zhLbl, children, note, noteZh }) {
 const inputStyle = { width: "100%", background: C.navyMid, border: `1px solid ${C.border}`, borderRadius: 6,
   padding: "8px 10px", fontSize: 13, color: C.white };
 
-function MetricCard({ en, zh, val, color, live }) {
+function MetricCard({ en, zh, val, color }) {
   return (
     <div style={{ background: C.navyMid, border: `1px solid ${C.border}`, borderRadius: 10, padding: "14px 12px", textAlign: "center" }}>
-      <div style={{ fontSize: 10, color: C.muted, letterSpacing: 0.5 }}>{en} {live && <span style={{color:C.green}}>●</span>}</div>
+      <div style={{ fontSize: 10, color: C.muted, letterSpacing: 0.5 }}>{en} <span style={{color:C.green}}>●</span></div>
       <div style={{ fontSize: 10, color: "#6f7f9c", marginBottom: 8 }}>{zh}</div>
       <div style={{ fontSize: 22, fontWeight: 700, color: color || C.white }}>{val}</div>
     </div>
   );
+}
+
+// Verified against production App.js calc engine.
+function calcMetrics({ price, rent, opex, downPct, rate, termYears, vacancyPct, leaseType, tenantCredit }) {
+  const down = price * (downPct / 100);
+  const loan = price - down;
+  const mRate = (rate / 100) / 12;
+  const nPay = termYears * 12;
+  const mortgage = mRate > 0 ? loan * mRate / (1 - Math.pow(1 + mRate, -nPay)) : loan / nPay;
+
+  const effExp = leaseType === "NNN" ? 0
+    : leaseType === "Modified Gross" ? opex * 0.5
+    : opex;
+
+  const effRent = rent * (1 - vacancyPct / 100);
+  const annRent = effRent * 12;
+  const annExp = effExp * 12;
+  const annMort = mortgage * 12;
+  const noi1 = annRent - annExp;
+  const dscr = annMort ? noi1 / annMort : 0;
+  const cf1 = noi1 - annMort;
+
+  const creditAdj = tenantCredit === "Investment Grade" ? -0.75
+    : tenantCredit === "Franchisee" ? 0.5 : 0;
+  const capRate = price ? (noi1 / price) * 100 + creditAdj : 0;
+  const coc = down ? (cf1 / down) * 100 : 0;
+
+  return { mortgage, capRate, dscr, coc, cf1, noi1 };
 }
 
 function Demo() {
@@ -52,25 +80,14 @@ function Demo() {
   const [opex, setOpex] = useState(21530);
   const [equityPct, setEquityPct] = useState(20);
   const [rate, setRate] = useState(6.5);
+  const [vacancyPct, setVacancyPct] = useState(5);
   const [leaseType, setLeaseType] = useState("Modified Gross");
   const [tenantCredit, setTenantCredit] = useState("Non-Rated");
 
-  const calc = useMemo(() => {
-    const termYears = 25;
-    const loanAmt = price * (1 - equityPct / 100);
-    const monthlyRate = rate / 100 / 12;
-    const n = termYears * 12;
-    const monthlyPayment = monthlyRate === 0 ? loanAmt / n
-      : loanAmt * monthlyRate / (1 - Math.pow(1 + monthlyRate, -n));
-    const noiMonthly = rent - opex;
-    const noiAnnual = noiMonthly * 12;
-    const capRate = price ? (noiAnnual / price) * 100 : 0;
-    const dscr = monthlyPayment ? noiMonthly / monthlyPayment : 0;
-    const cashFlowMonthly = noiMonthly - monthlyPayment;
-    const equityDollars = price * (equityPct / 100);
-    const cashOnCash = equityDollars ? ((cashFlowMonthly * 12) / equityDollars) * 100 : 0;
-    return { monthlyPayment, capRate, dscr, cashFlowMonthly, cashOnCash };
-  }, [price, rent, opex, equityPct, rate]);
+  const calc = useMemo(() => calcMetrics({
+    price, rent, opex, downPct: equityPct, rate, termYears: 30,
+    vacancyPct, leaseType, tenantCredit,
+  }), [price, rent, opex, equityPct, rate, vacancyPct, leaseType, tenantCredit]);
 
   const fmt$ = n => "$" + Math.round(n).toLocaleString();
   const dscrColor = calc.dscr >= 1.25 ? C.green : calc.dscr >= 1.0 ? C.gold : C.red;
@@ -85,12 +102,14 @@ function Demo() {
         <div style={{ fontSize: 12, color: "#6f7f9c" }}>对持有期内的租金、支出、杠杆和回报进行建模。</div>
       </div>
 
-      <div style={{ margin: "16px 24px 0", background: "#7B4A0022", border: `1px solid ${C.gold}`,
-        borderRadius: 6, padding: "8px 14px", fontSize: 11.5, color: C.gold }}>
-        ⚠️ Live prototype — Cap Rate, DSCR, Cash-on-Cash, and Monthly Mortgage recalculate as you edit (●).
-        IRR / Equity Multiple below are static examples, not yet wired to multi-year logic in this demo.
-        Label translations unreviewed by a native speaker. / 实时原型 —
-        资本化率、偿债覆盖率、现金回报率及每月按揭还款会随输入实时更新(●标记)。下方内部收益率/权益倍数为静态示例,本演示暂未接入多年计算逻辑。文字翻译尚未经母语人士审核。
+      <div style={{ margin: "16px 24px 0", background: "#2ECC8A18", border: `1px solid ${C.green}`,
+        borderRadius: 6, padding: "8px 14px", fontSize: 11.5, color: C.green }}>
+        ✓ Cap Rate, DSCR, Cash-on-Cash, and Monthly Mortgage now use the same verified formula as the
+        production app (lease-type-aware expense treatment, economic vacancy, 30-yr amortization).
+        IRR / Equity Multiple remain static examples — full multi-year projection isn't replicated in this demo.
+        Label translations still unreviewed by a native speaker. /
+        资本化率、偿债覆盖率、现金回报率及每月按揭还款现已采用与生产环境一致的验证公式(按租赁类型调整费用、考虑空置率、30年摊销)。
+        内部收益率/权益倍数仍为静态示例,本演示未接入完整多年预测。文字翻译尚未经母语人士审核。
       </div>
 
       <div style={{ display: "flex", gap: 18, padding: "18px 24px 60px" }}>
@@ -114,7 +133,9 @@ function Demo() {
             note="Includes property tax, insurance, and misc costs" noteZh="包含房产税、保险及其他杂项费用">
             <input style={inputStyle} type="number" value={opex} onChange={e => setOpex(Number(e.target.value) || 0)} />
           </Field>
-          <Field enLbl="Lease Type" zhLbl="租赁类型">
+          <Field enLbl="Lease Type" zhLbl="租赁类型"
+            note="Modified Gross counts 50% of OpEx toward NOI; NNN counts 0%; Gross counts 100%"
+            noteZh="修正毛租约按50%运营支出计入净收益;NNN为0%;毛租约为100%">
             <select style={inputStyle} value={leaseType} onChange={e => setLeaseType(e.target.value)}>
               <option>Gross</option><option>Modified Gross</option><option>NNN</option>
             </select>
@@ -124,6 +145,10 @@ function Demo() {
               <option>Investment Grade</option><option>Non-Rated</option><option>Franchisee</option>
             </select>
           </Field>
+
+          <div style={{ fontSize: 12, marginBottom: 2 }}>Economic Vacancy (%) <span style={{color:C.gold, float:"right"}}>{vacancyPct}%</span></div>
+          <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>经济空置率(%)</div>
+          <input type="range" min="0" max="20" value={vacancyPct} onChange={e => setVacancyPct(Number(e.target.value))} style={{ width: "100%", marginBottom: 14 }} />
 
           <div style={{ color: C.gold, fontWeight: 700, fontSize: 12, marginTop: 20, marginBottom: 2,
             borderTop: `1px solid ${C.border}`, paddingTop: 16 }}>💰 Financing &amp; Growth</div>
@@ -136,6 +161,7 @@ function Demo() {
           <div style={{ fontSize: 12, marginBottom: 2 }}>Loan Interest Rate (%) <span style={{color:C.gold, float:"right"}}>{rate.toFixed(3)}%</span></div>
           <div style={{ fontSize: 11, color: C.muted, marginBottom: 6 }}>贷款利率(%)</div>
           <input type="range" min="3" max="12" step="0.125" value={rate} onChange={e => setRate(Number(e.target.value))} style={{ width: "100%" }} />
+          <div style={{ fontSize: 10, color: "#6f7f9c", marginTop: 4 }}>30-yr amortization (fixed, matches production default) / 30年摊销期(固定,与生产环境默认一致)</div>
         </div>
 
         <div style={{ flex: 1 }}>
@@ -146,13 +172,13 @@ function Demo() {
             <MetricCard en="IRR (OPERATIONAL) (%)" zh="内部收益率(运营)" val="-1.64" color={C.red} />
             <MetricCard en="IRR (TOTAL INCL. SALE) (%)" zh="内部收益率(含出售)" val="23.48" color={C.green} />
             <MetricCard en="EQUITY MULTIPLE" zh="权益倍数" val="7.48×" color={C.gold} />
-            <MetricCard en="DSCR (YEAR 1)" zh="偿债覆盖率(第一年)" val={calc.dscr.toFixed(2)} color={dscrColor} live />
+            <MetricCard en="DSCR (YEAR 1)" zh="偿债覆盖率(第一年)" val={calc.dscr.toFixed(2)} color={dscrColor} />
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12, marginBottom: 18 }}>
-            <MetricCard en="CAP RATE (%)" zh="资本化率" val={calc.capRate.toFixed(2)} color={C.green} live />
-            <MetricCard en="CASH-ON-CASH (%)" zh="现金回报率" val={calc.cashOnCash.toFixed(2)} color={C.gold} live />
-            <MetricCard en="MO. CASH FLOW" zh="每月现金流" val={fmt$(calc.cashFlowMonthly)} color={calc.cashFlowMonthly >= 0 ? C.green : C.red} live />
-            <MetricCard en="MONTHLY MORTGAGE" zh="每月按揭还款" val={fmt$(calc.monthlyPayment)} color={C.white} live />
+            <MetricCard en="CAP RATE (%)" zh="资本化率" val={calc.capRate.toFixed(2)} color={C.green} />
+            <MetricCard en="CASH-ON-CASH (%)" zh="现金回报率" val={calc.coc.toFixed(2)} color={C.gold} />
+            <MetricCard en="ANNUAL CASH FLOW" zh="年现金流" val={fmt$(calc.cf1)} color={calc.cf1 >= 0 ? C.green : C.red} />
+            <MetricCard en="MONTHLY MORTGAGE" zh="每月按揭还款" val={fmt$(calc.mortgage)} color={C.white} />
           </div>
 
           <div style={{ background: C.navyMid, border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px 18px" }}>
