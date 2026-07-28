@@ -64,19 +64,25 @@ function isExcludable(row) {
 function scoreRow(row) {
   let score = 0;
   const reasons = [];
-  const ownerOcc = safeStr(row["Owner Occupied"]);
-  const isAbsentee = ownerOcc === "N";
-  if (isAbsentee) { score += 3; reasons.push("Absentee owner (+3)"); }
+
+  // NOTE: "Absentee owner" bonus removed. In CRE, the owner NOT occupying
+  // the building is the default for virtually every legitimate investment
+  // property (that's the entire premise of a leased income asset) — unlike
+  // residential, where absentee ownership is the exception and signals
+  // disengagement. Keeping this bonus was rewarding nearly every row
+  // indiscriminately, adding noise rather than signal. Confirmed via
+  // industry sources: CRE distress literature centers on loan maturity risk,
+  // tax delinquency, and partnership/entity friction — not owner-occupancy.
 
   const yrs = yearsOwned(row["Sale Date"]);
-  if (isAbsentee && yrs !== null && yrs >= 13) { score += 3; reasons.push(`Long-term owner, ${Math.round(yrs)} yrs (+3)`); }
+  if (yrs !== null && yrs >= 13) { score += 2; reasons.push(`Long-term owner, ${Math.round(yrs)} yrs (+2)`); }
 
   const mailState = safeStr(row["Mail Address State"]);
   const siteState = safeStr(row["Site Address State"]);
   const mailCity = safeStr(row["Mail Address City"]);
   const siteCity = safeStr(row["Site Address City"]);
-  if (isAbsentee && mailState && siteState && mailState !== siteState) { score += 3; reasons.push(`Out-of-state owner (${mailState}) (+3)`); }
-  else if (isAbsentee && mailCity && siteCity && mailCity !== siteCity) { score += 1; reasons.push("Out-of-area owner, in-state (+1)"); }
+  if (mailState && siteState && mailState !== siteState) { score += 2; reasons.push(`Out-of-state owner (${mailState}) (+2)`); }
+  else if (mailCity && siteCity && mailCity !== siteCity) { score += 1; reasons.push("Out-of-area owner, in-state (+1)"); }
 
   if (safeStr(row["Tax Delinquent"]) === "Y") { score += 4; reasons.push("Tax delinquent (+4)"); }
 
@@ -85,14 +91,17 @@ function scoreRow(row) {
   const nts = row["NTS"];
   if (nts && !["", "N", "NAN"].includes(safeStr(nts))) { score += 5; reasons.push("Pre-foreclosure: NTS scheduled (+5)"); }
 
-  if (safeStr(row["DEATH"]) === "Y") { score += 5; reasons.push("Death on record (+5)"); }
-  if (safeStr(row["DIVORCE"]) === "Y") { score += 3; reasons.push("Divorce on record (+3)"); }
+  // Death/Divorce kept, reframed: for entity-held CRE these approximate
+  // partnership dissolution / succession events (partner dies, retires,
+  // divorces triggering asset division) rather than a single owner's
+  // personal life event — a real, sourced CRE signal, just relabeled.
+  if (safeStr(row["DEATH"]) === "Y") { score += 4; reasons.push("Death on record — possible succession/estate situation (+4)"); }
+  if (safeStr(row["DIVORCE"]) === "Y") { score += 2; reasons.push("Divorce on record — possible forced asset division (+2)"); }
 
   const ownerName = safeStr(row["Owner Name"]);
   const isEntity = ENTITY_KEYWORDS.some(k => ownerName.includes(k));
   if (isEntity) { score += 1; reasons.push("Entity owner: LLC/Trust/Inc (+1)"); }
 
-  // Fixed casing vs. residential version — confirmed against real export headers.
   const stories = parseFloat(row["Number Of Stories"]);
   if (!isNaN(stories) && stories >= 2) { score += 0.5; reasons.push("Multi-story building (+0.5)"); }
 
