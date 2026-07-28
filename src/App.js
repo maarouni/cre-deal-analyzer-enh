@@ -5,6 +5,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs
 // ─── Access Control ───────────────────────────────────────────────────────────
 import { APP_PASSWORD_HASH, PIN_HASH_TO_NAME } from "./secrets";
 import MarketCompsPanel from "./MarketCompsPanel";
+import InsuranceEstimatePanelTier3 from "./InsuranceEstimatePanel_Tier3";
+import DealRadarCRE from "./DealRadarCRE";
 
 // SHA-256 hex digest of a string, via the browser's native Web Crypto API
 // (available on any modern browser over https/localhost — no library needed).
@@ -1058,6 +1060,8 @@ function DealWorkspace({ dealId, userName, activeTab, setActiveTab, omQueue, set
   const [rentGrowthRate,   setRentGrowthRate]   = usePersist("rentGrowthRate", 3);
   const [timeHorizon,      setTimeHorizon]      = usePersist("timeHorizon", 10);
   const [brokerFeePct,     setBrokerFeePct]     = usePersist("brokerFeePct", 2.5);
+  const [buildingSF,       setBuildingSF]       = usePersist("buildingSF", 0);
+  const [propertyType,     setPropertyType]     = usePersist("propertyType", "Office");
   const [leaseType,        setLeaseType]        = usePersist("leaseType", "Gross");
   const [rentBumpPct,      setRentBumpPct]      = usePersist("rentBumpPct", 10);
   const [rentBumpYears,    setRentBumpYears]    = usePersist("rentBumpYears", 5);
@@ -1120,13 +1124,14 @@ function DealWorkspace({ dealId, userName, activeTab, setActiveTab, omQueue, set
         {tab("compare",  `⚖️ Compare${dealIndex.length ? " (" + dealIndex.length + ")" : ""}`)}
         {tab("insights", "Insights")}
         {tab("report",   "Agent Report")}
+        {tab("dealradar", "🎯 Deal Radar")}
       </div>
 
       {/* Body */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
 
         {/* Sidebar — hidden on import and compare tabs */}
-        {activeTab !== "import" && activeTab !== "compare" && <div style={{ width: 200, background: C.navyMid,
+        {activeTab !== "import" && activeTab !== "compare" && activeTab !== "dealradar" && <div style={{ width: 200, background: C.navyMid,
           borderRight: `1px solid ${C.border}`,
           padding: "14px 12px", overflowY: "auto", flexShrink: 0, fontSize: 12 }}>
 
@@ -1183,6 +1188,14 @@ function DealWorkspace({ dealId, userName, activeTab, setActiveTab, omQueue, set
             min={0} max={200000} step={50}
             display={v => "$" + v.toLocaleString()} onChange={v=>{setMonthlyExpenses(v);setNeedsExpenses(false);}}
             note="Includes property tax, insurance, and miscellaneous costs" />
+
+          <PlusMinusInput label="Building SF (optional)" value={buildingSF}
+            min={0} max={2000000} step={500}
+            display={v => v ? v.toLocaleString() + " SF" : "—"} onChange={setBuildingSF}
+            note="Enables $/SF insurance modeling below" />
+
+          <SelectInput label="Property Type" value={propertyType}
+            options={["Office", "Retail", "Industrial", "Multifamily"]} onChange={setPropertyType} />
 
           <SelectInput label="Lease Type" value={leaseType}
             options={["Gross", "Modified Gross", "NNN"]} onChange={setLeaseType} />
@@ -1267,6 +1280,9 @@ function DealWorkspace({ dealId, userName, activeTab, setActiveTab, omQueue, set
             </div>
 
             <MarketCompsPanel zip={propZip} capRate={m.capRate} />
+
+            <InsuranceEstimatePanelTier3 zip={propZip} buildingSF={buildingSF}
+              propertyType={propertyType} leaseType={leaseType} onBuildingSFChange={setBuildingSF} />
 
             <div style={{ background: C.navyMid, borderRadius: 10, padding: "12px 14px",
               border: `1px solid ${C.border}`, marginBottom: 12 }}>
@@ -1438,6 +1454,8 @@ function DealWorkspace({ dealId, userName, activeTab, setActiveTab, omQueue, set
               </div>
             </div>
           )}
+
+          {activeTab === "dealradar" && <DealRadarCRE/>}
 
           <div style={{ marginTop: 12, padding: "9px 12px", background: C.navyLt,
             borderRadius: 7, fontSize: 11, color: C.muted,
