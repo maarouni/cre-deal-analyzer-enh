@@ -20,6 +20,16 @@
 //    apply to LLC/institutional CRE ownership. Death/Divorce signals are
 //    kept too but will rarely fire for entity-owned commercial parcels;
 //    they still apply to individually-held commercial property.
+//
+// 2026-08-02: In-page map re-added using the official Google Maps Embed
+// API (maps/embed/v1/place?key=...) instead of the old undocumented
+// "google.com/maps?output=embed" trick. That trick worked locally but
+// silently failed to render in production on every browser — it's not an
+// officially supported endpoint and Google can restrict/refuse it based on
+// referrer/traffic signals without any error surfacing in our own code.
+// The official Embed API is free/unlimited, just requires an API key
+// (see REACT_APP_GOOGLE_MAPS_KEY in .env, restricted by HTTP referrer to
+// cre.realestate-analytics.ai and localhost:3000 in Google Cloud Console).
 
 import React, { useState } from "react";
 
@@ -32,6 +42,19 @@ const C = {
 
 const ENTITY_KEYWORDS = ["LLC", "TRUST", "LIVING TRUST", "INC", " LP", "LTD", "PROPERTIES", "HOLDINGS", "PARTNERS", "GROUP"];
 const GOV_KEYWORDS = ["STATE OF", "COUNTY OF", "CITY OF", "USA", "UNITED STATES", "SCHOOL DISTRICT", "REDEVELOPMENT AGENCY"];
+// Defense-in-depth: exclude these use codes in code, not just at the ActiveFarm
+// export/checkbox stage. Confirmed necessary after an unfiltered 2,142-row
+// export (with the apartment checkboxes still checked) got dropped in and
+// "Highrise Apartments" scored as top A-grade CRE leads. Relying only on a
+// human remembering to uncheck boxes before export isn't a real safeguard.
+const EXCLUDE_USE_CODE_KEYWORDS = [
+  "APARTMENT", "HIGHRISE", "INSTITUTIONAL", "GOVERNMENT", "AGRICULTURAL",
+  "VACANT LAND", "TRANSPORTATION", "HISTORICAL",
+];
+
+// Official Maps Embed API key — set in .env (gitignored), referrer-restricted
+// in Google Cloud Console to production + localhost:3000.
+const MAPS_KEY = process.env.REACT_APP_GOOGLE_MAPS_KEY;
 
 function safeStr(val) {
   if (val === null || val === undefined) return "";
@@ -53,11 +76,14 @@ function isExcludable(row) {
   const price = safeNum(row["Sales Price"]);
   const bldg = safeNum(row["Building Area"]);
   const owner = safeStr(row["Owner Name"]);
+  const useCode = safeStr(row["Use Code Description"]);
   const isGov = GOV_KEYWORDS.some(k => owner.includes(k));
+  const isWrongType = EXCLUDE_USE_CODE_KEYWORDS.some(k => useCode.includes(k));
   const reasons = [];
   if (isNaN(price) || price <= 0) reasons.push("No recorded sale price");
   if (isNaN(bldg) || bldg <= 0) reasons.push("No building area (land/tax-roll record)");
   if (isGov) reasons.push("Government-owned parcel");
+  if (isWrongType) reasons.push(`Not a CRE-eligible use code (${row["Use Code Description"]})`);
   return { excluded: reasons.length > 0, reason: reasons.join("; ") };
 }
 
@@ -127,15 +153,30 @@ function parseCSV(text) {
   });
 }
 
-export default function DealRadarCRE() {
-  const [rows, setRows] = useState([]);
-  const [fileNames, setFileNames] = useState([]);
-  const [gradeFilter, setGradeFilter] = useState("ALL");
+export default function DealRadarCRE({ rows = [], setRows, fileNames = [], setFileNames, gradeFilter = "ALL", setGradeFilter }) {
   const [dragOver, setDragOver] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [parseError, setParseError] = useState("");
+  const [visibleCount, setVisibleCount] = useState(200);
+  const [mapOpenFor, setMapOpenFor] = useState(null);
+  const _setRows = setRows || (() => {});
+  const _setFileNames = setFileNames || (() => {});
+  const _setGradeFilter = setGradeFilter || (() => {});
+
+  function clearAll() {
+    _setRows([]);
+    _setFileNames([]);
+    _setGradeFilter("ALL");
+    setParseError("");
+    setVisibleCount(200);
+  }
 
   function handleFiles(fileList) {
     const files = Array.from(fileList);
-    setFileNames(files.map(f => f.name));
+    if (files.length === 0) return;
+    setParseError("");
+    setIsLoading(true);
+    _setFileNames(files.map(f => f.name));
     let allRows = [];
     let done = 0;
     files.forEach(file => {
@@ -158,8 +199,19 @@ export default function DealRadarCRE() {
             if (b["Lead Grade"] === "EXCLUDED") return -1;
             return (b["Seller Score"] ?? 0) - (a["Seller Score"] ?? 0);
           });
-          setRows(allRows);
+          setIsLoading(false);
+          setVisibleCount(200);
+          if (allRows.length === 0) {
+            setParseError("No rows found — check this is a CSV export from ActiveFarm (not a .numbers/.xlsx file, and not empty).");
+            _setFileNames([]);
+          } else {
+            _setRows(allRows);
+          }
         }
+      };
+      reader.onerror = () => {
+        setIsLoading(false);
+        setParseError(`Couldn't read "${file.name}" — try re-exporting it as a CSV.`);
       };
       reader.readAsText(file);
     });
@@ -213,9 +265,27 @@ export default function DealRadarCRE() {
           onChange={e => handleFiles(e.target.files)} />
       </div>
 
+      {isLoading && (
+        <div style={{ fontSize: 11.5, color: C.gold, marginBottom: 10 }}>
+          ⏳ Processing file(s)…
+        </div>
+      )}
+
+      {parseError && (
+        <div style={{ fontSize: 11.5, color: C.red, marginBottom: 10, padding: "8px 10px",
+          background: C.red + "18", borderRadius: 6, border: `1px solid ${C.red}40` }}>
+          ⚠ {parseError}
+        </div>
+      )}
+
       {fileNames.length > 0 && (
-        <div style={{ fontSize: 11, color: C.muted, marginBottom: 10 }}>
-          Loaded: {fileNames.join(", ")}
+        <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, display: "flex", alignItems: "center", gap: 10 }}>
+          <span>Loaded: {fileNames.join(", ")}</span>
+          <button onClick={clearAll}
+            style={{ border: `1px solid ${C.red}60`, background: "transparent", color: C.red,
+              borderRadius: 5, padding: "2px 9px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+            ✕ Clear
+          </button>
         </div>
       )}
 
@@ -223,7 +293,7 @@ export default function DealRadarCRE() {
         <>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12, alignItems: "center" }}>
             {["ALL", "A", "B", "C", "D", "EXCLUDED"].map(g => (
-              <button key={g} onClick={() => setGradeFilter(g)}
+              <button key={g} onClick={() => _setGradeFilter(g)}
                 style={{
                   padding: "5px 12px", borderRadius: 6, fontSize: 11.5, fontWeight: 700,
                   border: `1px solid ${g === "ALL" ? C.border : gradeColor[g] + "60"}`,
@@ -250,12 +320,34 @@ export default function DealRadarCRE() {
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map((r, i) => (
-                  <tr key={i} style={{ borderTop: `1px solid ${C.border}` }}>
+                {filteredRows.slice(0, visibleCount).map((r, i) => {
+                  const addr = [r["Site Address House Number"], r["Site Address Street Name"]].filter(Boolean).join(" ");
+                  const full = [addr, r["Site Address City"], r["Site Address State"], r["Site Address Zip+4"]].filter(Boolean).join(", ");
+                  const isMapOpen = mapOpenFor === i;
+                  return (
+                  <React.Fragment key={i}>
+                  <tr style={{ borderTop: `1px solid ${C.border}` }}>
                     <td style={{ padding: "7px 10px", color: gradeColor[r["Lead Grade"]], fontWeight: 700 }}>{r["Lead Grade"]}</td>
                     <td style={{ padding: "7px 10px", color: C.white }}>{r["Seller Score"] ?? "—"}</td>
                     <td style={{ padding: "7px 10px", color: C.white }}>
-                      {[r["Site Address House Number"], r["Site Address Street Name"]].filter(Boolean).join(" ")}
+                      {addr ? (
+                        <span style={{ display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
+                          {MAPS_KEY && (
+                            <button onClick={() => setMapOpenFor(isMapOpen ? null : i)}
+                              style={{ border: `1px solid ${C.gold}60`, background: isMapOpen ? C.gold + "22" : "transparent",
+                                color: C.gold, borderRadius: 5, padding: "2px 7px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
+                              🗺 {isMapOpen ? "Hide" : "View"}
+                            </button>
+                          )}
+                          <span>{addr}</span>
+                          <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(full)}`}
+                            target="_blank" rel="noopener noreferrer"
+                            title="Open in Google Maps (new tab)"
+                            style={{ color: C.muted, fontSize: 11 }}>
+                            ↗
+                          </a>
+                        </span>
+                      ) : "—"}
                     </td>
                     <td style={{ padding: "7px 10px", color: C.muted }}>{r["Site Address City"]}</td>
                     <td style={{ padding: "7px 10px", color: C.muted }}>{r["Use Code Description"]}</td>
@@ -266,10 +358,34 @@ export default function DealRadarCRE() {
                     </td>
                     <td style={{ padding: "7px 10px", color: C.muted, maxWidth: 320 }}>{r["Score Reasons"]}</td>
                   </tr>
-                ))}
+                  {isMapOpen && MAPS_KEY && (
+                    <tr>
+                      <td colSpan={8} style={{ padding: 0, background: C.navy }}>
+                        <iframe
+                          title={`map-${i}`}
+                          width="100%" height="280" style={{ border: 0, display: "block" }}
+                          loading="lazy"
+                          referrerPolicy="no-referrer-when-downgrade"
+                          src={`https://www.google.com/maps/embed/v1/place?key=${MAPS_KEY}&q=${encodeURIComponent(full)}`}
+                        />
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
+          {filteredRows.length > visibleCount && (
+            <div style={{ textAlign: "center", marginTop: 10 }}>
+              <button onClick={() => setVisibleCount(v => v + 200)}
+                style={{ padding: "6px 16px", borderRadius: 6, fontSize: 11.5, fontWeight: 700,
+                  border: `1px solid ${C.border}`, background: C.navyMid, color: C.white, cursor: "pointer" }}>
+                Show 200 more ({filteredRows.length - visibleCount} remaining)
+              </button>
+            </div>
+          )}
         </>
       )}
 

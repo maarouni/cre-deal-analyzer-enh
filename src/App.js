@@ -1061,6 +1061,11 @@ function DealWorkspace({ dealId, userName, activeTab, setActiveTab, omQueue, set
   const [timeHorizon,      setTimeHorizon]      = usePersist("timeHorizon", 10);
   const [brokerFeePct,     setBrokerFeePct]     = usePersist("brokerFeePct", 2.5);
   const [buildingSF,       setBuildingSF]       = usePersist("buildingSF", 0);
+  // Deal Radar state lifted to App level (not localStorage — CSV drops can be
+  // large) so switching tabs no longer unmounts and loses the loaded CSV.
+  const [dealRadarRows, setDealRadarRows] = useState([]);
+  const [dealRadarFileNames, setDealRadarFileNames] = useState([]);
+  const [dealRadarGradeFilter, setDealRadarGradeFilter] = useState("ALL");
   const [propertyType,     setPropertyType]     = usePersist("propertyType", "Office");
   const [leaseType,        setLeaseType]        = usePersist("leaseType", "Gross");
   const [rentBumpPct,      setRentBumpPct]      = usePersist("rentBumpPct", 10);
@@ -1455,7 +1460,10 @@ function DealWorkspace({ dealId, userName, activeTab, setActiveTab, omQueue, set
             </div>
           )}
 
-          {activeTab === "dealradar" && <DealRadarCRE/>}
+          {activeTab === "dealradar" && <DealRadarCRE
+            rows={dealRadarRows} setRows={setDealRadarRows}
+            fileNames={dealRadarFileNames} setFileNames={setDealRadarFileNames}
+            gradeFilter={dealRadarGradeFilter} setGradeFilter={setDealRadarGradeFilter} />}
 
           <div style={{ marginTop: 12, padding: "9px 12px", background: C.navyLt,
             borderRadius: 7, fontSize: 11, color: C.muted,
