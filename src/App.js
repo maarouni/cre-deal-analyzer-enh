@@ -140,7 +140,7 @@ function GateScreen({ onAuth }) {
     setBusy(false);
     const name = PIN_HASH_TO_NAME[hash];
     if (name) {
-      window.gtag && window.gtag('event', 'login', { method: 'PIN' });
+      window.gtag && window.gtag('event', 'login', { method: 'PIN', tester_name: name });
       onAuth(name);
     }
     else setPinErr("❌ Incorrect PIN. Please try again.");
