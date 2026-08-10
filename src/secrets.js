@@ -5,9 +5,9 @@
 //
 // Password: InvestAgent_Full1!
 // PINs: masoud 1234, andy 7788, colin 8877, ali 5566, mark 4433,
-// markfuruta 3344, michaelkaplan 4484 (change any of these below to whatever
-// you actually want, then regenerate its hash — see instructions at the
-// bottom of this file).
+// markfuruta 3344, michaelkaplan 4484, devon 5209 (change any of these
+// below to whatever you actually want, then regenerate its hash — see
+// instructions at the bottom of this file).
 
 export const APP_PASSWORD_HASH =
   "9633cf3bcf9a8de0b8317a24ef1eef7cc1a25f6bd62ad6f590fe9c0f58f9dc65";
@@ -21,6 +21,7 @@ export const PIN_HASH_TO_NAME = {
   "15fc36b3e80b9d7f87f7dc90cd7a2845c5d8501c30f03379fcf14154f1680380": "Mark Furuta",
   "8f33eff9c330b9e8348f8c96ab45d0de6f6c5311089a29bf8bf338d91a17a6f9": "bill",
   "a2713a5c710ced404167414fe1d7c38ff07eea0d146a71ae1c196587737bd0e8": "Michael Kaplan",
+  "0b3fe555ae8bd943feae4fb5e9ee5bebc608cafec26b75fe281b245ba635edc8": "Devon Mendoza",
 };
 
 // To add/change a PIN or the password, generate its SHA-256 hex hash and
