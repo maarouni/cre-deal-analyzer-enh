@@ -20,6 +20,12 @@
 //    apply to LLC/institutional CRE ownership. Death/Divorce signals are
 //    kept too but will rarely fire for entity-owned commercial parcels;
 //    they still apply to individually-held commercial property.
+// 6. 2026-08-10: Stale-price flag added. Sales Price on these exports is
+//    whatever the property last sold for, which can be decades old (e.g.
+//    301-451 Federal Hwy: CSV showed $3.6M/1999, BCPA's current value is
+//    $17.3M). Rows with a Sale Date 5+ years old now get a visible warning
+//    next to the Sales Price so it's never mistaken for current value —
+//    same fix applied to the manual-entry calculator is still pending.
 //
 // 2026-08-02: In-page map re-added using the official Google Maps Embed
 // API (maps/embed/v1/place?key=...) instead of the old undocumented
@@ -94,6 +100,22 @@ function yearsOwned(saleDateStr) {
   const d = new Date(saleDateStr);
   if (isNaN(d.getTime())) return null;
   return (Date.now() - d.getTime()) / (1000 * 60 * 60 * 24 * 365.25);
+}
+
+// Sale Date on these rows can be decades old — Sales Price is what the
+// property sold for THEN, not what it's worth now. Confirmed necessary
+// after handing off a 1999 sale price ($3.6M) as if it were current value
+// for 301-451 Federal Hwy, when BCPA's actual current value was $17.3M.
+// Flag any row where the sale is 5+ years old so this can't happen silently
+// again — shown right next to the Sales Price in the table.
+const STALE_PRICE_YEARS = 5;
+function priceAgeFlag(saleDateStr) {
+  const yrs = yearsOwned(saleDateStr);
+  if (yrs === null) return null;
+  const roundedYrs = Math.round(yrs);
+  if (roundedYrs < STALE_PRICE_YEARS) return null;
+  const saleYear = new Date(saleDateStr).getFullYear();
+  return `⚠ ${roundedYrs} yrs old (sold ${saleYear}) — historical price, not current value`;
 }
 
 // Applies the JSON filter object Claude returns (via the NLQ Worker) to the
@@ -269,12 +291,13 @@ export default function DealRadarCRE({ rows = [], setRows, fileNames = [], setFi
       reader.onload = (e) => {
         const parsed = parseCSV(e.target.result);
         const scored = parsed.map(row => {
+          const priceAge = priceAgeFlag(row["Sale Date"]);
           const { excluded, reason } = isExcludable(row);
           if (excluded) {
-            return { ...row, "Seller Score": null, "Lead Grade": "EXCLUDED", "Score Reasons": reason, "Source File": file.name };
+            return { ...row, "Seller Score": null, "Lead Grade": "EXCLUDED", "Score Reasons": reason, "Source File": file.name, "Price Age Flag": priceAge };
           }
           const { score, reasons } = scoreRow(row);
-          return { ...row, "Seller Score": score, "Lead Grade": gradeOf(score), "Score Reasons": reasons, "Source File": file.name };
+          return { ...row, "Seller Score": score, "Lead Grade": gradeOf(score), "Score Reasons": reasons, "Source File": file.name, "Price Age Flag": priceAge };
         });
         allRows = allRows.concat(scored);
         done += 1;
@@ -440,6 +463,12 @@ export default function DealRadarCRE({ rows = [], setRows, fileNames = [], setFi
                     <td style={{ padding: "7px 10px", color: C.white }}>
                       {r["Sales Price"] && safeNum(r["Sales Price"]) > 0
                         ? "$" + Math.round(safeNum(r["Sales Price"])).toLocaleString() : "—"}
+                      {r["Price Age Flag"] && (
+                        <div title={r["Price Age Flag"]}
+                          style={{ fontSize: 10, color: C.orange, marginTop: 2, whiteSpace: "normal", maxWidth: 170, lineHeight: 1.3 }}>
+                          {r["Price Age Flag"]}
+                        </div>
+                      )}
                     </td>
                     <td style={{ padding: "7px 10px", color: C.muted, maxWidth: 320 }}>{r["Score Reasons"]}</td>
                   </tr>
