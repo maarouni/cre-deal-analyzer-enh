@@ -56,6 +56,31 @@ const EXCLUDE_USE_CODE_KEYWORDS = [
 // in Google Cloud Console to production + localhost:3000.
 const MAPS_KEY = process.env.REACT_APP_GOOGLE_MAPS_KEY;
 
+// Natural-language farm query — proxies through a Cloudflare Worker (holds the
+// Anthropic key server-side; never shipped to the browser) which forwards to
+// Claude's Messages API. The Worker returns Claude's raw response; we parse
+// the JSON filter object Claude is instructed to produce out of its reply.
+const NLQ_WORKER_URL = "https://autumn-shape-7ddf.maarouni.workers.dev/";
+
+const NLQ_SYSTEM_PROMPT = `You translate a real estate broker's plain-English lead search into a
+JSON filter for a CRE lead table. Respond with ONLY a JSON object, no prose outside it.
+
+Available columns / signals you may filter on:
+- useCodeContains: substring to match against the property's Use Code Description (e.g. "retail", "office", "industrial").
+- city: substring match against Site Address City.
+- state: 2-letter match against Site Address State.
+- minPrice / maxPrice: numbers, matched against Sales Price.
+- minYearsOwned: number, years since Sale Date.
+- minScore: number, matched against the lead's computed Seller Score.
+- requireSignals: array, any of "NOD", "NTS", "TAX_DELINQUENT", "DEATH", "DIVORCE", "ENTITY_OWNER", "OUT_OF_STATE".
+
+Respond with this exact shape:
+{
+  "filters": { <only the keys above that are relevant, omit the rest> },
+  "unsupported": [<short phrases for anything in the query you have no data field for, e.g. "owner age", "mortgage balance", "distance to transit">],
+  "explanation": "<one short sentence describing what you filtered for>"
+}`;
+
 function safeStr(val) {
   if (val === null || val === undefined) return "";
   return String(val).trim().toUpperCase();
@@ -69,6 +94,43 @@ function yearsOwned(saleDateStr) {
   const d = new Date(saleDateStr);
   if (isNaN(d.getTime())) return null;
   return (Date.now() - d.getTime()) / (1000 * 60 * 60 * 24 * 365.25);
+}
+
+// Applies the JSON filter object Claude returns (via the NLQ Worker) to the
+// already-scored rows. Unknown/missing filter keys are simply skipped, so a
+// partial or empty filter is a no-op rather than an error.
+function applyNLFilter(rows, filter, entityKeywords) {
+  if (!filter) return rows;
+  const f = filter.filters || {};
+  return rows.filter(r => {
+    if (f.useCodeContains && !safeStr(r["Use Code Description"]).includes(safeStr(f.useCodeContains))) return false;
+    if (f.city && !safeStr(r["Site Address City"]).includes(safeStr(f.city))) return false;
+    if (f.state && safeStr(r["Site Address State"]) !== safeStr(f.state)) return false;
+    const price = safeNum(r["Sales Price"]);
+    if (f.minPrice != null && !(price >= f.minPrice)) return false;
+    if (f.maxPrice != null && !(price <= f.maxPrice)) return false;
+    if (f.minYearsOwned != null) {
+      const yrs = yearsOwned(r["Sale Date"]);
+      if (yrs === null || yrs < f.minYearsOwned) return false;
+    }
+    if (f.minScore != null && !((r["Seller Score"] ?? -Infinity) >= f.minScore)) return false;
+    if (Array.isArray(f.requireSignals)) {
+      for (const sig of f.requireSignals) {
+        if (sig === "NOD" && ["", "N", "NAN"].includes(safeStr(r["NOD"]))) return false;
+        if (sig === "NTS" && ["", "N", "NAN"].includes(safeStr(r["NTS"]))) return false;
+        if (sig === "TAX_DELINQUENT" && safeStr(r["Tax Delinquent"]) !== "Y") return false;
+        if (sig === "DEATH" && safeStr(r["DEATH"]) !== "Y") return false;
+        if (sig === "DIVORCE" && safeStr(r["DIVORCE"]) !== "Y") return false;
+        if (sig === "ENTITY_OWNER" && !entityKeywords.some(k => safeStr(r["Owner Name"]).includes(k))) return false;
+        if (sig === "OUT_OF_STATE") {
+          const mailState = safeStr(r["Mail Address State"]);
+          const siteState = safeStr(r["Site Address State"]);
+          if (!(mailState && siteState && mailState !== siteState)) return false;
+        }
+      }
+    }
+    return true;
+  });
 }
 
 // Data-quality pre-filter — confirmed necessary against real Sacramento export.
