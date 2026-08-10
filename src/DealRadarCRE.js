@@ -141,14 +141,37 @@ function gradeOf(score) {
   return "D";
 }
 
+function parseCSVLine(line) {
+  const result = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; }
+        else { inQuotes = false; }
+      } else {
+        cur += c;
+      }
+    } else {
+      if (c === '"') { inQuotes = true; }
+      else if (c === ",") { result.push(cur); cur = ""; }
+      else { cur += c; }
+    }
+  }
+  result.push(cur);
+  return result;
+}
+
 function parseCSV(text) {
   const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
   if (lines.length < 2) return [];
-  const headers = lines[0].split(",").map(h => h.trim().replace(/^"|"$/g, ""));
+  const headers = parseCSVLine(lines[0]).map(h => h.trim());
   return lines.slice(1).map(line => {
-    const vals = line.split(",");
+    const vals = parseCSVLine(line);
     const obj = {};
-    headers.forEach((h, i) => obj[h] = (vals[i] || "").trim().replace(/^"|"$/g, ""));
+    headers.forEach((h, i) => obj[h] = (vals[i] || "").trim());
     return obj;
   });
 }
