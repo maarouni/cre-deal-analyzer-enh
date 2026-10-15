@@ -84,7 +84,12 @@ function calcMetrics({ purchasePrice, monthlyRent, downPct, mortgageRate,
   }
 
   const brokerFeeAdj = purchasePrice * (brokerFeePct / 100);
-  const saleVal = purchasePrice * ((1 + appreciationRate / 100) ** timeHorizon) - brokerFeeAdj;
+  // Remaining loan balance at exit is repaid from sale proceeds (fully amortized if hold >= term).
+  const kPaid   = Math.min(timeHorizon * 12, nPay);
+  const loanBal = Math.max(0, mRate > 0
+    ? loan * (1 + mRate) ** kPaid - mortgage * (((1 + mRate) ** kPaid - 1) / mRate)
+    : loan - mortgage * kPaid);
+  const saleVal = purchasePrice * ((1 + appreciationRate / 100) ** timeHorizon) - brokerFeeAdj - loanBal;
   const cfTotal = [...cashFlows];
   cfTotal[cfTotal.length - 1] += saleVal;
 

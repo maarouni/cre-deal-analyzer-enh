@@ -3,10 +3,8 @@
 // (Note: this raises the bar against casual snooping, not against anyone
 // who tries — see the caveat given alongside this file.)
 //
-// Password: InvestAgent_Full1!
-// PINs: masoud 1234, devon 5209, robert 9046
-// (change any of these below to whatever you actually want, then
-// regenerate its hash — see instructions at the bottom of this file).
+// Never write the plaintext password or PINs in this file: the repo is public.
+// To change one, regenerate its hash — see instructions at the bottom of this file.
 
 export const APP_PASSWORD_HASH =
   "9633cf3bcf9a8de0b8317a24ef1eef7cc1a25f6bd62ad6f590fe9c0f58f9dc65";
