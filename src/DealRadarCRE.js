@@ -54,7 +54,7 @@ const GOV_KEYWORDS = ["STATE OF", "COUNTY OF", "CITY OF", "USA", "UNITED STATES"
 // "Highrise Apartments" scored as top A-grade CRE leads. Relying only on a
 // human remembering to uncheck boxes before export isn't a real safeguard.
 const EXCLUDE_USE_CODE_KEYWORDS = [
-  "APARTMENT", "HIGHRISE", "INSTITUTIONAL", "GOVERNMENT", "AGRICULTURAL",
+  "APARTMENT", "INSTITUTIONAL", "GOVERNMENT", "AGRICULTURAL",
   "VACANT LAND", "TRANSPORTATION", "HISTORICAL",
 ];
 
@@ -102,6 +102,46 @@ function yearsOwned(saleDateStr) {
   return (Date.now() - d.getTime()) / (1000 * 60 * 60 * 24 * 365.25);
 }
 
+// Years owned from the last sale date; falls back to TitlePro's
+// "Length of Residence (in months)" when there's no usable sale date.
+function ownedYears(row) {
+  const y = yearsOwned(row["Sale Date"]);
+  if (y !== null) return y;
+  const m = safeNum(row["Owned Months"]);
+  return isNaN(m) || m <= 0 ? null : m / 12;
+}
+
+// 2026-10-28: Accept TitlePro247 list exports as well as ActiveFarm. Maps
+// TitlePro's column names onto the ActiveFarm names the rest of this file
+// reads. Only fills a field that's empty, so ActiveFarm files are untouched.
+const TITLEPRO_COLUMN_MAP = {
+  "Owner Name(s) Formatted": "Owner Name",
+  "City": "Site Address City",
+  "State": "Site Address State",
+  "ZIP Code": "Site Address Zip+4",
+  "Mailing Address": "Full Mail Address",
+  "Mailing City": "Mail Address City",
+  "Mailing State": "Mail Address State",
+  "Mailing ZIP Code": "Mail Address Zip+4",
+  "Last Transaction Sale Date": "Sale Date",
+  "Last Transaction Sale Price": "Sales Price",
+  "Detailed Property Type": "Use Code Description",
+  "Length of Residence (in months)": "Owned Months",
+  "Building / Living Area SF": "Building Area",
+  "Number of Stories": "Number Of Stories",
+};
+function normalizeRow(row) {
+  const out = { ...row };
+  Object.entries(TITLEPRO_COLUMN_MAP).forEach(([src, dst]) => {
+    if (src in row && !safeStr(out[dst])) out[dst] = row[src];
+  });
+  // TitlePro gives one full street string, ActiveFarm splits number/street.
+  if (row["Property Address"] && !out["Site Address House Number"] && !out["Site Address Street Name"]) {
+    out["Site Address Street Name"] = row["Property Address"];
+  }
+  return out;
+}
+
 // Sale Date on these rows can be decades old — Sales Price is what the
 // property sold for THEN, not what it's worth now. Confirmed necessary
 // after handing off a 1999 sale price ($3.6M) as if it were current value
@@ -132,7 +172,7 @@ function applyNLFilter(rows, filter, entityKeywords) {
     if (f.minPrice != null && !(price >= f.minPrice)) return false;
     if (f.maxPrice != null && !(price <= f.maxPrice)) return false;
     if (f.minYearsOwned != null) {
-      const yrs = yearsOwned(r["Sale Date"]);
+      const yrs = ownedYears(r);
       if (yrs === null || yrs < f.minYearsOwned) return false;
     }
     if (f.minScore != null && !((r["Seller Score"] ?? -Infinity) >= f.minScore)) return false;
@@ -164,8 +204,13 @@ function isExcludable(row) {
   const isGov = GOV_KEYWORDS.some(k => owner.includes(k));
   const isWrongType = EXCLUDE_USE_CODE_KEYWORDS.some(k => useCode.includes(k));
   const reasons = [];
-  if (isNaN(price) || price <= 0) reasons.push("No recorded sale price");
-  if (isNaN(bldg) || bldg <= 0) reasons.push("No building area (land/tax-roll record)");
+  // 2026-10-28: Non-disclosure states (e.g. Texas) don't record sale prices,
+  // so a missing price alone no longer excludes a row. Only exclude when there
+  // is no transaction record at all (no price, no sale date, no ownership length).
+  const hasPrice = !isNaN(price) && price > 0;
+  if (!hasPrice && ownedYears(row) === null) reasons.push("No sale record (no price, date or ownership length)");
+  // Building area only checked when the file actually has that column.
+  if ("Building Area" in row && (isNaN(bldg) || bldg <= 0)) reasons.push("No building area (land/tax-roll record)");
   if (isGov) reasons.push("Government-owned parcel");
   if (isWrongType) reasons.push(`Not a CRE-eligible use code (${row["Use Code Description"]})`);
   return { excluded: reasons.length > 0, reason: reasons.join("; ") };
@@ -184,7 +229,7 @@ function scoreRow(row) {
   // industry sources: CRE distress literature centers on loan maturity risk,
   // tax delinquency, and partnership/entity friction — not owner-occupancy.
 
-  const yrs = yearsOwned(row["Sale Date"]);
+  const yrs = ownedYears(row);
   if (yrs !== null && yrs >= 13) { score += 2; reasons.push(`Long-term owner, ${Math.round(yrs)} yrs (+2)`); }
 
   const mailState = safeStr(row["Mail Address State"]);
@@ -290,7 +335,7 @@ export default function DealRadarCRE({ rows = [], setRows, fileNames = [], setFi
       const reader = new FileReader();
       reader.onload = (e) => {
         const parsed = parseCSV(e.target.result);
-        const scored = parsed.map(row => {
+        const scored = parsed.map(normalizeRow).map(row => {
           const priceAge = priceAgeFlag(row["Sale Date"]);
           const { excluded, reason } = isExcludable(row);
           if (excluded) {
@@ -310,7 +355,7 @@ export default function DealRadarCRE({ rows = [], setRows, fileNames = [], setFi
           setIsLoading(false);
           setVisibleCount(200);
           if (allRows.length === 0) {
-            setParseError("No rows found — check this is a CSV export from ActiveFarm (not a .numbers/.xlsx file, and not empty).");
+            setParseError("No rows found — check this is a CSV export from ActiveFarm or TitlePro247 (not a .numbers/.xlsx file, and not empty).");
             _setFileNames([]);
           } else {
             _setRows(allRows);
@@ -351,7 +396,7 @@ export default function DealRadarCRE({ rows = [], setRows, fileNames = [], setFi
         🎯 Deal Radar (CRE): A/B/C Leads
       </div>
       <div style={{ fontSize: 11, color: C.muted, marginBottom: 12 }}>
-        Drag in one or more ActiveFarm Commercial CSV exports — get graded leads back instantly, ranked across all files.
+        Drag in one or more ActiveFarm Commercial or TitlePro247 CSV exports — get graded leads back instantly, ranked across all files.
         Filtered for retail / office / industrial / entertainment parcels (excludes apartments — see Residential Deal Radar for multifamily).
       </div>
 
