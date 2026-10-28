@@ -129,6 +129,8 @@ const TITLEPRO_COLUMN_MAP = {
   "Length of Residence (in months)": "Owned Months",
   "Building / Living Area SF": "Building Area",
   "Number of Stories": "Number Of Stories",
+  "Assessed Market Value": "Market Value",
+  "Assessed Total Value": "Market Value",
 };
 function normalizeRow(row) {
   const out = { ...row };
@@ -138,6 +140,12 @@ function normalizeRow(row) {
   // TitlePro gives one full street string, ActiveFarm splits number/street.
   if (row["Property Address"] && !out["Site Address House Number"] && !out["Site Address Street Name"]) {
     out["Site Address Street Name"] = row["Property Address"];
+  }
+  // TitlePro delinquency: a delinquent tax year or a past-due amount => Tax Delinquent = Y
+  if (!safeStr(out["Tax Delinquent"])) {
+    const due = safeNum(row["Delinquent Taxes"]);
+    const flag = safeStr(row["Delinquent Taxes"]);
+    if (safeStr(row["Delinquent Tax Year"]) || flag === "Y" || flag === "YES" || (!isNaN(due) && due > 0)) out["Tax Delinquent"] = "Y";
   }
   return out;
 }
@@ -347,11 +355,14 @@ export default function DealRadarCRE({ rows = [], setRows, fileNames = [], setFi
         allRows = allRows.concat(scored);
         done += 1;
         if (done === files.length) {
-          allRows.sort((a, b) => {
-            if (a["Lead Grade"] === "EXCLUDED") return 1;
-            if (b["Lead Grade"] === "EXCLUDED") return -1;
-            return (b["Seller Score"] ?? 0) - (a["Seller Score"] ?? 0);
-          });
+          // Excluded last; then by grade; within a grade, rows with a recorded
+          // sale price first (most TX rows have none); then by score.
+          const GRADE_RANK = { A: 0, B: 1, C: 2, D: 3, EXCLUDED: 9 };
+          const hasPrice = r => safeNum(r["Sales Price"]) > 0 ? 1 : 0;
+          allRows.sort((a, b) =>
+            (GRADE_RANK[a["Lead Grade"]] - GRADE_RANK[b["Lead Grade"]]) ||
+            (hasPrice(b) - hasPrice(a)) ||
+            ((b["Seller Score"] ?? 0) - (a["Seller Score"] ?? 0)));
           setIsLoading(false);
           setVisibleCount(200);
           if (allRows.length === 0) {
@@ -467,7 +478,7 @@ export default function DealRadarCRE({ rows = [], setRows, fileNames = [], setFi
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
               <thead>
                 <tr style={{ background: C.navyLt }}>
-                  {["Grade", "Score", "Address", "City", "Use Code", "Owner Name", "Sales Price", "Reasons"].map(h => (
+                  {["Grade", "Score", "Address", "City", "Use Code", "Owner Name", "Sale Price / Value", "Reasons"].map(h => (
                     <th key={h} style={{ padding: "8px 10px", textAlign: "left", color: C.gold, whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -506,9 +517,15 @@ export default function DealRadarCRE({ rows = [], setRows, fileNames = [], setFi
                     <td style={{ padding: "7px 10px", color: C.muted }}>{r["Use Code Description"]}</td>
                     <td style={{ padding: "7px 10px", color: C.muted }}>{r["Owner Name"]}</td>
                     <td style={{ padding: "7px 10px", color: C.white }}>
-                      {r["Sales Price"] && safeNum(r["Sales Price"]) > 0
-                        ? "$" + Math.round(safeNum(r["Sales Price"])).toLocaleString() : "—"}
-                      {r["Price Age Flag"] && (
+                      {safeNum(r["Sales Price"]) > 0
+                        ? "$" + Math.round(safeNum(r["Sales Price"])).toLocaleString()
+                        : safeNum(r["Market Value"]) > 0
+                          ? (<span title="County appraised value, not a sale price (non-disclosure state)">
+                              {"$" + Math.round(safeNum(r["Market Value"])).toLocaleString()}
+                              <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>appraised value, not a sale price</div>
+                            </span>)
+                          : "—"}
+                      {safeNum(r["Sales Price"]) > 0 && r["Price Age Flag"] && (
                         <div title={r["Price Age Flag"]}
                           style={{ fontSize: 10, color: C.orange, marginTop: 2, whiteSpace: "normal", maxWidth: 170, lineHeight: 1.3 }}>
                           {r["Price Age Flag"]}
